@@ -5,9 +5,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: paddle-ocr-api
-    restart: always
-    ports:
-      - "8000:8000"
+    # Coolify will handle the container name and restart policy
+    # Removing fixed port binding to avoid conflicts with existing containers or Coolify's proxy
+    # Coolify automatically routes traffic to the exposed port (EXPOSE 8000 in Dockerfile)
     environment:
       - PORT=8000
+    expose:
+      - "8000"

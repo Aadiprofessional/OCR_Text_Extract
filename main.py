@@ -71,7 +71,9 @@ async def extract_text(request: PDFRequest, background_tasks: BackgroundTasks):
             
             try:
                 # Run OCR on the image
-                result = ocr.ocr(temp_img_path, cls=True)
+                # cls=True is removed from the call as it might be causing issues with the current version.
+                # The initialization PaddleOCR(use_angle_cls=True) should be sufficient.
+                result = ocr.ocr(temp_img_path)
                 
                 page_text = ""
                 if result and result[0]:

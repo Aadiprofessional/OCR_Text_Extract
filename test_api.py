@@ -3,7 +3,7 @@ import json
 import time
 
 def test_api():
-    url = "http://localhost:8000/extract-text"
+    url = "https://python.matrixedu.ai/extract-text"
     payload = {
         "url": "https://www.princexml.com/samples/catalogue/PrinceCatalogue.pdf"
     }

@@ -80,12 +80,26 @@ async def extract_text(request: PDFRequest, background_tasks: BackgroundTasks):
                 # The initialization PaddleOCR(use_angle_cls=True) should be sufficient.
                 result = ocr.ocr(temp_img_path)
                 
+                # Log the raw result structure for debugging
+                logger.info(f"Page {page_num + 1} raw result: {result}")
+
                 page_text = ""
-                if result and result[0]:
-                    for line in result[0]:
-                        # line format: [[box coords], [text, confidence]]
-                        text = line[1][0]
-                        page_text += text + "\n"
+                if result:
+                    # Handle different result structures
+                    # Structure 1: [ [ [ [x,y], ... ], [text, conf] ], ... ]  (standard)
+                    # Structure 2: [ [ [ [x,y], ... ], [text, conf] ], ... ]  (sometimes wrapped in another list)
+                    
+                    # Flatten if it's a list of lists where the first element is also a list
+                    ocr_result = result[0] if isinstance(result, list) and len(result) > 0 and isinstance(result[0], list) else result
+
+                    for line in ocr_result:
+                        if line:
+                            # line format: [[box coords], [text, confidence]]
+                            try:
+                                text = line[1][0]
+                                page_text += text + "\n"
+                            except (IndexError, TypeError) as e:
+                                logger.warning(f"Unexpected line format: {line}, error: {e}")
                 
                 extracted_text.append({
                     "page": page_num + 1,

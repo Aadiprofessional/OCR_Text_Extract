@@ -85,22 +85,35 @@ async def extract_text(request: PDFRequest, background_tasks: BackgroundTasks):
 
                 page_text = ""
                 if result:
-                    # Handle different result structures
-                    # Structure 1: [ [ [ [x,y], ... ], [text, conf] ], ... ]  (standard)
-                    # Structure 2: [ [ [ [x,y], ... ], [text, conf] ], ... ]  (sometimes wrapped in another list)
+                    # The latest PaddleOCR output format seems to be a list of dictionaries (or a single dictionary in a list)
+                    # Based on logs: [{'rec_texts': ['PRINCE', ...], 'rec_scores': [...], ...}]
                     
-                    # Flatten if it's a list of lists where the first element is also a list
-                    ocr_result = result[0] if isinstance(result, list) and len(result) > 0 and isinstance(result[0], list) else result
+                    # Handle list of dicts (new format)
+                    if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
+                        for res in result:
+                            if 'rec_texts' in res:
+                                # New format: text is in 'rec_texts' list
+                                texts = res.get('rec_texts', [])
+                                page_text += "\n".join(texts) + "\n"
+                            else:
+                                # Fallback or unknown format, try to log keys
+                                logger.warning(f"Unknown dict keys in result: {res.keys()}")
+                    
+                    # Handle legacy format (list of lists)
+                    elif isinstance(result, list) and len(result) > 0 and isinstance(result[0], list):
+                         ocr_result = result[0]
+                         for line in ocr_result:
+                            if line and len(line) > 1:
+                                try:
+                                    text = line[1][0]
+                                    page_text += text + "\n"
+                                except (IndexError, TypeError):
+                                    pass
+                    
+                    # Handle unexpected format
+                    else:
+                         logger.warning(f"Unexpected result format: {type(result)}")
 
-                    for line in ocr_result:
-                        if line:
-                            # line format: [[box coords], [text, confidence]]
-                            try:
-                                text = line[1][0]
-                                page_text += text + "\n"
-                            except (IndexError, TypeError) as e:
-                                logger.warning(f"Unexpected line format: {line}, error: {e}")
-                
                 extracted_text.append({
                     "page": page_num + 1,
                     "text": page_text.strip()

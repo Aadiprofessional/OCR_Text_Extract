@@ -1,0 +1,108 @@
+import os
+import requests
+import fitz  # PyMuPDF
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from pydantic import BaseModel
+from paddleocr import PaddleOCR
+import tempfile
+import logging
+
+# Initialize FastAPI app
+app = FastAPI(title="PaddleOCR API", description="API to extract text from PDF URLs using PaddleOCR")
+
+# Initialize Logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize PaddleOCR (load model once)
+# use_angle_cls=True enables angle classification
+# lang='en' sets the language to English. Change if needed.
+try:
+    ocr = PaddleOCR(use_angle_cls=True, lang='en')
+    logger.info("PaddleOCR initialized successfully.")
+except Exception as e:
+    logger.error(f"Failed to initialize PaddleOCR: {e}")
+    raise e
+
+class PDFRequest(BaseModel):
+    url: str
+
+def cleanup_temp_file(path: str):
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            logger.info(f"Cleaned up temp file: {path}")
+    except Exception as e:
+        logger.error(f"Error cleaning up file {path}: {e}")
+
+@app.post("/extract-text")
+async def extract_text(request: PDFRequest, background_tasks: BackgroundTasks):
+    url = request.url
+    logger.info(f"Received request for URL: {url}")
+
+    temp_pdf_path = None
+    
+    try:
+        # Download PDF
+        response = requests.get(url, stream=True)
+        if response.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to download PDF from URL")
+        
+        # Create a temp file for the PDF
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+            for chunk in response.iter_content(chunk_size=8192):
+                temp_pdf.write(chunk)
+            temp_pdf_path = temp_pdf.name
+        
+        logger.info(f"PDF downloaded to {temp_pdf_path}")
+
+        # Open PDF with PyMuPDF
+        doc = fitz.open(temp_pdf_path)
+        extracted_text = []
+
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            pix = page.get_pixmap()
+            
+            # Create a temp image file for the page
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_img:
+                pix.save(temp_img.name)
+                temp_img_path = temp_img.name
+            
+            try:
+                # Run OCR on the image
+                result = ocr.ocr(temp_img_path, cls=True)
+                
+                page_text = ""
+                if result and result[0]:
+                    for line in result[0]:
+                        # line format: [[box coords], [text, confidence]]
+                        text = line[1][0]
+                        page_text += text + "\n"
+                
+                extracted_text.append({
+                    "page": page_num + 1,
+                    "text": page_text.strip()
+                })
+            finally:
+                # Clean up image file immediately
+                cleanup_temp_file(temp_img_path)
+
+        return {"status": "success", "data": extracted_text}
+
+    except Exception as e:
+        logger.error(f"Error processing request: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    finally:
+        # Schedule PDF file cleanup
+        if temp_pdf_path:
+            background_tasks.add_task(cleanup_temp_file, temp_pdf_path)
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

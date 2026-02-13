@@ -1,9 +1,11 @@
 FROM python:3.9-slim
 
 # Install system dependencies
-# libgl1-mesa-glx and libglib2.0-0 are often required for opencv
-# libgomp1 is required for paddle
-RUN apt-get update && apt-get install -y \
+# Added --fix-missing and clean before update to handle potential mirror issues
+# Split update and install to ensure package lists are fresh
+RUN apt-get clean && \
+    apt-get update --fix-missing && \
+    apt-get install -y --no-install-recommends \
     libgl1-mesa-glx \
     libglib2.0-0 \
     libgomp1 \

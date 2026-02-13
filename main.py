@@ -17,8 +17,9 @@ logger = logging.getLogger(__name__)
 # Initialize PaddleOCR (load model once)
 # use_angle_cls=True enables angle classification
 # lang='en' sets the language to English. Change if needed.
+# enable_mkldnn=False to avoid "ConvertPirAttribute2RuntimeAttribute" errors in some environments
 try:
-    ocr = PaddleOCR(use_angle_cls=True, lang='en')
+    ocr = PaddleOCR(use_angle_cls=True, lang='en', enable_mkldnn=False, use_gpu=False)
     logger.info("PaddleOCR initialized successfully.")
 except Exception as e:
     logger.error(f"Failed to initialize PaddleOCR: {e}")

@@ -1,13 +1,10 @@
-FROM python:3.9-slim
+FROM python:3.9-bullseye
 
 # Install system dependencies
-# We are encountering issues with apt-get update on the default mirrors.
-# Attempting to use a more robust update strategy:
-# 1. Update package lists
-# 2. Install dependencies
-# 3. Clean up
+# Using bullseye which is more stable than slim
+# Added --allow-releaseinfo-change to handle potential repository changes
 RUN set -eux; \
-    apt-get update; \
+    apt-get update --allow-releaseinfo-change; \
     apt-get install -y --no-install-recommends \
         libgl1-mesa-glx \
         libglib2.0-0 \

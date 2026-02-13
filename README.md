@@ -23,7 +23,7 @@ This is a FastAPI-based API that accepts a PDF URL, extracts text using PaddleOC
 
 ## Deployment to Coolify
 
-This project is ready to be deployed to Coolify using the provided `Dockerfile`.
+This project is ready to be deployed to Coolify.
 
 ### Steps:
 
@@ -32,19 +32,18 @@ This project is ready to be deployed to Coolify using the provided `Dockerfile`.
 
 2.  **Create Service in Coolify**:
     - Go to your Coolify dashboard.
-    - Click **"+ New"** -> **"Project"** -> Select your project -> **"New Resource"**.
-    - Select **"Application"** -> **"Public Repository"** (or Private if your repo is private).
-    - Enter your repository URL (e.g., `https://github.com/username/repo`).
-    - Select the branch (usually `main` or `master`).
+    - Create a new **Project** -> **New Resource**.
+    - Select **Application** -> **Public/Private Repository**.
+    - Enter your repository URL and select the branch.
 
 3.  **Configuration**:
     - **Build Pack**: Select **Docker Compose**.
     - **Docker Compose Location**: `/docker-compose.yaml` (should be default).
-    - **Port**: Ensure the internal port is set to `8000`.
     - **Domains**: Configure your domain (e.g., `https://ocr-api.yourdomain.com`).
+    - **Port**: You do **NOT** need to set a port in the Coolify UI if you are using the provided `docker-compose.yaml`. The file is configured to expose port 8000 internally.
 
 4.  **Deploy**:
-    - Click **"Deploy"**.
+    - Click **Deploy**.
     - Coolify will build the Docker image and start the container.
     - Watch the build logs to ensure `paddlepaddle` and models are downloaded correctly.
 
@@ -77,4 +76,3 @@ No special environment variables are required for basic usage.
   ]
 }
 ```
-# OCR_Text_Extract

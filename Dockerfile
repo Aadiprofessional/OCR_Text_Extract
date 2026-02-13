@@ -1,16 +1,19 @@
 FROM python:3.9-slim
 
 # Install system dependencies
-# Added --fix-missing and clean before update to handle potential mirror issues
-# Split update and install to ensure package lists are fresh
-RUN apt-get clean && \
-    apt-get update --fix-missing && \
+# We are encountering issues with apt-get update on the default mirrors.
+# Attempting to use a more robust update strategy:
+# 1. Update package lists
+# 2. Install dependencies
+# 3. Clean up
+RUN set -eux; \
+    apt-get update; \
     apt-get install -y --no-install-recommends \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    libgomp1 \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+        libgl1-mesa-glx \
+        libglib2.0-0 \
+        libgomp1 \
+        curl; \
+    rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app

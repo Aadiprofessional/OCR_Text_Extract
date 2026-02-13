@@ -18,8 +18,12 @@ logger = logging.getLogger(__name__)
 # use_angle_cls=True enables angle classification
 # lang='en' sets the language to English. Change if needed.
 # enable_mkldnn=False to avoid "ConvertPirAttribute2RuntimeAttribute" errors in some environments
+# Note: newer versions of paddleocr might have changed argument names. 
+# 'use_gpu' is not a valid argument for the new Pipeline-based API in some versions.
+# We will try to set it via environment variable if needed, or rely on defaults.
 try:
-    ocr = PaddleOCR(use_angle_cls=True, lang='en', enable_mkldnn=False, use_gpu=False)
+    # Removed use_gpu=False as it caused ValueError: Unknown argument: use_gpu
+    ocr = PaddleOCR(use_angle_cls=True, lang='en', enable_mkldnn=False)
     logger.info("PaddleOCR initialized successfully.")
 except Exception as e:
     logger.error(f"Failed to initialize PaddleOCR: {e}")

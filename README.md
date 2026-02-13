@@ -38,7 +38,8 @@ This project is ready to be deployed to Coolify using the provided `Dockerfile`.
     - Select the branch (usually `main` or `master`).
 
 3.  **Configuration**:
-    - **Build Pack**: Select **Docker Compose** or **Dockerfile**. Since we have a `Dockerfile`, Coolify should automatically detect it.
+    - **Build Pack**: Select **Docker Compose**.
+    - **Docker Compose Location**: `/docker-compose.yaml` (should be default).
     - **Port**: Ensure the internal port is set to `8000`.
     - **Domains**: Configure your domain (e.g., `https://ocr-api.yourdomain.com`).
 

@@ -20,17 +20,11 @@ COPY requirements.txt .
 
 # Install python dependencies
 # Using --no-cache-dir to keep image small
-RUN pip install --no-cache-dir -r requirements.txt && \
-    pip uninstall -y opencv-python && \
-    pip install opencv-python-headless
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy model download script
-COPY download_models.py .
-
-# Run model download script
-# This script is designed to exit gracefully (code 0) even if download fails,
-# preventing build failure. Models will be downloaded at runtime if needed.
-RUN python download_models.py
+# Download paddleocr models during build to avoid downloading them at runtime
+# We can do this by running a simple python script that initializes PaddleOCR
+RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=True, lang='en')"
 
 # Copy application code
 COPY . .

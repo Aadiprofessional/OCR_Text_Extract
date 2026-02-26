@@ -3,13 +3,7 @@ import requests
 import fitz  # PyMuPDF
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-# PaddleOCR imports moved to inside the try/except block to handle import errors
-try:
-    from paddleocr import PaddleOCR
-except ImportError:
-    # If paddleocr is not installed or import fails
-    PaddleOCR = None
-
+from paddleocr import PaddleOCR
 import tempfile
 import logging
 import numpy as np
@@ -28,70 +22,16 @@ logger = logging.getLogger(__name__)
 # Note: newer versions of paddleocr might have changed argument names. 
 # 'use_gpu' is not a valid argument for the new Pipeline-based API in some versions.
 # We will try to set it via environment variable if needed, or rely on defaults.
-ocr = None
-pp_structure = None
-
 try:
     # Removed use_gpu=False as it caused ValueError: Unknown argument: use_gpu
-    if PaddleOCR:
-        # initialize with use_angle_cls=True, lang='en', enable_mkldnn=False
-        ocr = PaddleOCR(use_angle_cls=True, lang='en', enable_mkldnn=False)
-        logger.info("PaddleOCR initialized successfully.")
-    else:
-        logger.error("PaddleOCR module not found.")
+    ocr = PaddleOCR(use_angle_cls=True, lang='en', enable_mkldnn=False)
+    logger.info("PaddleOCR initialized successfully.")
 except Exception as e:
     logger.error(f"Failed to initialize PaddleOCR: {e}")
-    import traceback
-    traceback.print_exc()
-    # Don't raise here to allow partial initialization if possible, or raise later if critical
-
-try:
-    # Initialize PPStructure for layout analysis and table extraction
-    # show_log=False reduces console spam
-    try:
-        # Try importing from top level
-        from paddleocr import PPStructure
-    except ImportError as e:
-        logger.error(f"Failed to import PPStructure from paddleocr: {e}")
-        # Fallback to submodule import if top level fails
-        try:
-            from paddleocr.ppstructure import PPStructure
-        except ImportError as e2:
-             logger.error(f"Failed to import PPStructure from paddleocr.ppstructure: {e2}")
-             try:
-                from ppstructure.predict_system import PPStructure
-             except ImportError as e3:
-                logger.error(f"Failed to import PPStructure from ppstructure.predict_system: {e3}")
-                raise e
-
-    pp_structure = PPStructure(show_log=False, image_orientation=False)
-    logger.info("PPStructure initialized successfully.")
-except Exception as e:
-    logger.error(f"Failed to initialize PPStructure: {e}")
-    import traceback
-    logger.error(traceback.format_exc())
-    # We will check availability in the endpoint
-
-if not ocr and not pp_structure:
-    raise RuntimeError("Failed to initialize any OCR engine")
+    raise e
 
 class PDFRequest(BaseModel):
     url: str
-
-def convert_to_serializable(obj):
-    if isinstance(obj, (np.integer, int)):
-        return int(obj)
-    elif isinstance(obj, (np.floating, float)):
-        return float(obj)
-    elif isinstance(obj, (np.bool_, bool)):
-        return bool(obj)
-    elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    elif isinstance(obj, list):
-        return [convert_to_serializable(item) for item in obj]
-    elif isinstance(obj, dict):
-        return {k: convert_to_serializable(v) for k, v in obj.items()}
-    return obj
 
 def cleanup_temp_file(path: str):
     try:
@@ -100,6 +40,49 @@ def cleanup_temp_file(path: str):
             logger.info(f"Cleaned up temp file: {path}")
     except Exception as e:
         logger.error(f"Error cleaning up file {path}: {e}")
+
+def convert_numpy_types(obj):
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, list):
+        return [convert_numpy_types(i) for i in obj]
+    elif isinstance(obj, dict):
+        return {k: convert_numpy_types(v) for k, v in obj.items()}
+    else:
+        return obj
+
+def process_ocr_result(result):
+    processed_result = []
+    
+    if not result:
+        return processed_result
+
+    # Handle list of dicts (new format)
+    if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
+        for res in result:
+            processed_result.append(convert_numpy_types(res))
+            
+    # Handle legacy format (list of lists)
+    elif isinstance(result, list) and len(result) > 0 and isinstance(result[0], list):
+        ocr_result = result[0]
+        for line in ocr_result:
+            if line and len(line) > 1:
+                box = line[0]
+                text_info = line[1]
+                if len(text_info) >= 2:
+                    text = text_info[0]
+                    score = text_info[1]
+                    processed_result.append({
+                        "box": convert_numpy_types(box),
+                        "text": text,
+                        "score": convert_numpy_types(score)
+                    })
+    
+    return processed_result
 
 @app.post("/extract-text")
 async def extract_text(request: PDFRequest, background_tasks: BackgroundTasks):
@@ -194,13 +177,10 @@ async def extract_text(request: PDFRequest, background_tasks: BackgroundTasks):
         if temp_pdf_path:
             background_tasks.add_task(cleanup_temp_file, temp_pdf_path)
 
-@app.post("/extract-table-text")
-async def extract_table_text(request: PDFRequest, background_tasks: BackgroundTasks):
-    if not pp_structure:
-        raise HTTPException(status_code=503, detail="PPStructure is not initialized")
-
+@app.post("/extract-text-with-position")
+async def extract_text_with_position(request: PDFRequest, background_tasks: BackgroundTasks):
     url = request.url
-    logger.info(f"Received table/text extraction request for URL: {url}")
+    logger.info(f"Received request for URL: {url} (with position)")
 
     temp_pdf_path = None
     
@@ -232,28 +212,18 @@ async def extract_table_text(request: PDFRequest, background_tasks: BackgroundTa
                 temp_img_path = temp_img.name
             
             try:
-                # Run PPStructure on the image
-                # Returns a list of dicts: [{'type': 'text', 'bbox': [x1, y1, x2, y2], 'res': ...}, ...]
-                result = pp_structure(temp_img_path)
+                # Run OCR on the image
+                result = ocr.ocr(temp_img_path)
                 
-                # Process result to be JSON serializable
-                # PPStructure result contains numpy arrays and floats
-                serializable_result = []
-                if result:
-                    for region in result:
-                        # region is a dict
-                        # type: str
-                        # bbox: list or np.array
-                        # res: list (for text) or dict (for table)
-                        
-                        region_data = convert_to_serializable(region)
-                        serializable_result.append(region_data)
+                # Log the raw result structure for debugging
+                logger.info(f"Page {page_num + 1} raw result: {result}")
+
+                page_data = process_ocr_result(result)
 
                 extracted_data.append({
                     "page": page_num + 1,
-                    "regions": serializable_result
+                    "result": page_data
                 })
-                
             finally:
                 # Clean up image file immediately
                 cleanup_temp_file(temp_img_path)
@@ -261,10 +231,7 @@ async def extract_table_text(request: PDFRequest, background_tasks: BackgroundTa
         return {"status": "success", "data": extracted_data}
 
     except Exception as e:
-        logger.error(f"Error processing table/text extraction request: {str(e)}")
-        # Log full traceback for debugging
-        import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"Error processing request: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     
     finally:

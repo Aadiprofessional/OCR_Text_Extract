@@ -1,11 +1,7 @@
 fastapi
 uvicorn
-numpy<2.0.0
-paddlepaddle>=2.6.0
-paddleocr>=2.7.0
-shapely
-pyclipper
-layoutparser
+paddlepaddle
+paddleocr
 requests
 opencv-python-headless
 PyMuPDF

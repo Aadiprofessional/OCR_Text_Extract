@@ -8,8 +8,13 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
         libgl1-mesa-glx \
         libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender-dev \
         libgomp1 \
-        curl; \
+        curl \
+        build-essential \
+        python3-dev; \
     rm -rf /var/lib/apt/lists/*
 
 # Set working directory

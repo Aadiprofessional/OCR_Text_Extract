@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 # Note: newer versions of paddleocr might have changed argument names. 
 # 'use_gpu' is not a valid argument for the new Pipeline-based API in some versions.
 # We will try to set it via environment variable if needed, or rely on defaults.
+# Initialize OCR engines
 try:
     # Set environment variables to avoid permission errors and connectivity checks
     os.environ['PADDLEOCR_CACHE_DIR'] = '/tmp/paddleocr_cache'
@@ -69,25 +70,28 @@ try:
     else:
         logger.error("PaddleOCR class not found.")
         ocr = None
-    
-    # Initialize PPStructure for table extraction
-    # This might download models on first run
-    if PPStructure:
-        try:
-             table_engine = PPStructure(show_log=True, image_orientation=True)
-        except (TypeError, ValueError):
-             logger.info("Standard PPStructure init failed (unknown args), trying PPStructureV3 args...")
-             table_engine = PPStructure(use_doc_orientation_classify=True, use_doc_unwarping=False)
-        logger.info(f"{PPStructure.__name__} initialized successfully.")
-    else:
-        table_engine = None
-        logger.warning("PPStructure not available (ImportError). Table extraction will fail.")
 
 except Exception as e:
-    logger.error(f"Failed to initialize OCR engines: {e}")
-    # Don't crash immediately, let specific routes fail if needed, or re-raise
-    # But usually better to fail fast if core functionality is broken
+    logger.error(f"Failed to initialize PaddleOCR: {e}")
+    # PaddleOCR is critical for basic functionality, so we might want to fail hard here
+    # or continue with reduced functionality. For now, let's re-raise.
     raise e
+
+# Initialize PPStructure separately so failure doesn't crash the whole app
+table_engine = None
+if PPStructure:
+    try:
+         try:
+             table_engine = PPStructure(show_log=True, image_orientation=True)
+         except (TypeError, ValueError):
+             logger.info("Standard PPStructure init failed (unknown args), trying PPStructureV3 args...")
+             table_engine = PPStructure(use_doc_orientation_classify=True, use_doc_unwarping=False)
+         logger.info(f"{PPStructure.__name__} initialized successfully.")
+    except Exception as e:
+         logger.error(f"Failed to initialize PPStructure: {e}")
+         table_engine = None
+else:
+    logger.warning("PPStructure not available (ImportError). Table extraction will fail.")
 
 class PDFRequest(BaseModel):
     url: str

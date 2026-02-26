@@ -82,10 +82,19 @@ table_engine = None
 if PPStructure:
     try:
          try:
-             table_engine = PPStructure(show_log=True, image_orientation=True)
+             # Try standard init, passing enable_mkldnn=False to avoid "ConvertPirAttribute2RuntimeAttribute" errors
+             table_engine = PPStructure(show_log=True, image_orientation=True, enable_mkldnn=False)
          except (TypeError, ValueError):
              logger.info("Standard PPStructure init failed (unknown args), trying PPStructureV3 args...")
-             table_engine = PPStructure(use_doc_orientation_classify=True, use_doc_unwarping=False)
+             # Also disable mkldnn for V3 if possible, though arg name might differ or it might not be supported directly
+             # PPStructureV3 typically doesn't take enable_mkldnn in init, but let's check docs/source if needed.
+             # For now, we'll try without it first, as V3 structure is different.
+             # Update: Some users report enable_mkldnn helps. Let's try passing it if it accepts kwargs.
+             try:
+                 table_engine = PPStructure(use_doc_orientation_classify=True, use_doc_unwarping=False, enable_mkldnn=False)
+             except (TypeError, ValueError):
+                 # Fallback if enable_mkldnn is not accepted
+                 table_engine = PPStructure(use_doc_orientation_classify=True, use_doc_unwarping=False)
          logger.info(f"{PPStructure.__name__} initialized successfully.")
     except Exception as e:
          logger.error(f"Failed to initialize PPStructure: {e}")

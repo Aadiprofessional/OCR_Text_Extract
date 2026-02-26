@@ -8,13 +8,8 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
         libgl1-mesa-glx \
         libglib2.0-0 \
-        libsm6 \
-        libxext6 \
-        libxrender-dev \
         libgomp1 \
-        curl \
-        build-essential \
-        python3-dev; \
+        curl; \
     rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -27,17 +22,12 @@ COPY requirements.txt .
 # Using --no-cache-dir to keep image small
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Download paddleocr models during build to avoid downloading them at runtime
+# We can do this by running a simple python script that initializes PaddleOCR
+RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=True, lang='en')"
+
 # Copy application code
 COPY . .
-
-# Set environment variables for PaddleOCR
-ENV PADDLEOCR_CACHE_DIR=/tmp/paddleocr_cache
-ENV PADDLEX_HOME=/tmp/paddlex
-ENV PADDLE_PDX_CACHE_HOME=/tmp/paddlex_home
-ENV PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
-
-# Run the model download script
-RUN python download_models.py || echo "Model download failed, but continuing build. Models will be downloaded at runtime."
 
 # Expose port
 EXPOSE 8000

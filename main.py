@@ -3,7 +3,7 @@ import requests
 import fitz  # PyMuPDF
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from paddleocr import PaddleOCR
+from paddleocr import PaddleOCR, PPStructure
 import tempfile
 import logging
 import numpy as np
@@ -28,8 +28,15 @@ try:
     # Removed use_gpu=False as it caused ValueError: Unknown argument: use_gpu
     ocr = PaddleOCR(use_angle_cls=True, lang='en', enable_mkldnn=False)
     logger.info("PaddleOCR initialized successfully.")
+    
+    # Initialize PPStructure for table extraction
+    # This might download models on first run
+    table_engine = PPStructure(show_log=True, image_orientation=True)
+    logger.info("PPStructure initialized successfully.")
 except Exception as e:
-    logger.error(f"Failed to initialize PaddleOCR: {e}")
+    logger.error(f"Failed to initialize OCR engines: {e}")
+    # Don't crash immediately, let specific routes fail if needed, or re-raise
+    # But usually better to fail fast if core functionality is broken
     raise e
 
 class PDFRequest(BaseModel):
@@ -219,6 +226,44 @@ def process_page_ocr(page_num, temp_img_path):
         # Clean up image file immediately after OCR is done
         cleanup_temp_file(temp_img_path)
 
+def process_page_structure(page_num, temp_img_path):
+    try:
+        start_time = time.time()
+        # Run Structure Analysis on the image
+        # This returns a list of regions (tables, figures, text, etc.)
+        # Each region has 'type', 'bbox', 'res' (html for tables, text for others), and 'img' (cropped image)
+        result = table_engine(temp_img_path)
+        logger.info(f"Page {page_num} Structure Analysis processed in {time.time() - start_time:.2f}s")
+        
+        # Log result type
+        if result:
+             logger.debug(f"Page {page_num} structure result type: {type(result)}")
+
+        # Process result to remove large images and convert types
+        page_data = []
+        if isinstance(result, list):
+            for region in result:
+                # Remove large image data if present (it's usually in 'img' key)
+                # convert_numpy_types handles filtering 'img' key
+                clean_region = convert_numpy_types(region)
+                page_data.append(clean_region)
+        else:
+            page_data = convert_numpy_types(result)
+
+        return {
+            "page": page_num,
+            "result": page_data
+        }
+    except Exception as e:
+        logger.error(f"Error processing structure for page {page_num}: {e}")
+        return {
+            "page": page_num,
+            "error": str(e)
+        }
+    finally:
+        # Clean up image file immediately
+        cleanup_temp_file(temp_img_path)
+
 @app.post("/extract-table-text")
 async def extract_table_text(request: PDFRequest, background_tasks: BackgroundTasks):
     url = request.url.strip()
@@ -255,15 +300,15 @@ async def extract_table_text(request: PDFRequest, background_tasks: BackgroundTa
                 temp_img_path = temp_img.name
                 page_tasks.append((page_num + 1, temp_img_path))
         
-        logger.info(f"Extracted {len(page_tasks)} pages as images. Starting parallel OCR.")
+        logger.info(f"Extracted {len(page_tasks)} pages as images. Starting parallel Structure Analysis.")
         
         extracted_data = []
         
-        # Use ThreadPoolExecutor for parallel OCR
-        # Adjust max_workers based on CPU cores, but since OCR is CPU bound and releases GIL (hopefully),
-        # too many threads might cause contention. 4-8 is usually good.
+        # Use ThreadPoolExecutor for parallel processing
+        # Structure analysis can be heavy, so limit workers if needed
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_page = {executor.submit(process_page_ocr, p_num, p_path): p_num for p_num, p_path in page_tasks}
+            # Use process_page_structure instead of process_page_ocr
+            future_to_page = {executor.submit(process_page_structure, p_num, p_path): p_num for p_num, p_path in page_tasks}
             
             for future in concurrent.futures.as_completed(future_to_page):
                 try:

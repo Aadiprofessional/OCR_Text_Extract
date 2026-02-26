@@ -589,7 +589,12 @@ def process_page_structure(page_num, temp_img_path, method: str = "auto"):
                 # Run Structure Analysis on the image
                 # This returns a list of regions (tables, figures, text, etc.)
                 # Each region has 'type', 'bbox', 'res' (html for tables, text for others), and 'img' (cropped image)
-                result = table_engine(temp_img_path)
+                if hasattr(table_engine, 'predict'):
+                     # PPStructureV3 uses .predict(input=...)
+                     result = table_engine.predict(input=temp_img_path)
+                else:
+                     # PPStructureV2 uses __call__
+                     result = table_engine(temp_img_path)
                 logger.info(f"Page {page_num} Structure Analysis processed in {time.time() - start_time:.2f}s")
                 
                 # Log result type

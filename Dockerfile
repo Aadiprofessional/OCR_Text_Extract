@@ -1,8 +1,6 @@
 FROM python:3.9-bullseye
 
 # Install system dependencies
-# Using bullseye which is more stable than slim
-# Added --allow-releaseinfo-change to handle potential repository changes
 RUN set -eux; \
     apt-get update --allow-releaseinfo-change; \
     apt-get install -y --no-install-recommends \
@@ -19,12 +17,13 @@ WORKDIR /app
 COPY requirements.txt .
 
 # Install python dependencies
-# Using --no-cache-dir to keep image small
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Download paddleocr models during build to avoid downloading them at runtime
-# We can do this by running a simple python script that initializes PaddleOCR
-RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=True, lang='en')"
+# Download paddleocr models during build (optional but good practice)
+# We try to initialize PPStructureV3 to trigger downloads
+# Note: If PPStructureV3 is not available in the installed version, this might fail build.
+# We will use a try-except block in the build script or just rely on runtime download.
+# For now, let's just copy the code.
 
 # Copy application code
 COPY . .

@@ -24,17 +24,13 @@ RUN pip install --no-cache-dir -r requirements.txt && \
     pip uninstall -y opencv-python && \
     pip install opencv-python-headless
 
-# Download paddleocr models during build to avoid downloading them at runtime
-# We can do this by running a simple python script that initializes PaddleOCR
-# Wrapped in try/except to print error but not fail build, allowing deployment to proceed
-# Runtime logs will show the actual error if it persists
-RUN python -c "import traceback; \
-try: \
-    from paddleocr import PaddleOCR; \
-    PaddleOCR(use_angle_cls=True, lang='en'); \
-except Exception: \
-    traceback.print_exc(); \
-    print('Warning: Model download failed during build. Will retry at runtime.')"
+# Copy model download script
+COPY download_models.py .
+
+# Run model download script
+# This script is designed to exit gracefully (code 0) even if download fails,
+# preventing build failure. Models will be downloaded at runtime if needed.
+RUN python download_models.py
 
 # Copy application code
 COPY . .

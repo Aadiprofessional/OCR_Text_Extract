@@ -1,4 +1,10 @@
 import os
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+os.environ.setdefault("HOME", PROJECT_DIR)
+os.environ.setdefault("PADDLEX_HOME", os.path.join(PROJECT_DIR, ".paddlex"))
+os.environ.setdefault("PADDLEX_CACHE_DIR", os.path.join(PROJECT_DIR, ".paddlex", "temp"))
+os.environ.setdefault("PADDLE_HUB_HOME", os.path.join(PROJECT_DIR, ".paddlex", "official_models"))
+os.environ.setdefault("HUB_HOME", os.path.join(PROJECT_DIR, ".paddlex", "official_models"))
 import requests
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel

@@ -1,5 +1,4 @@
 fastapi
 uvicorn
-paddlepaddle
 paddleocr>=2.7.0
 requests

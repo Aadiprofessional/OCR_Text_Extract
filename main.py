@@ -48,17 +48,25 @@ try:
     try:
         # Try importing from top level
         from paddleocr import PPStructure
-    except ImportError:
+    except ImportError as e:
+        logger.error(f"Failed to import PPStructure from paddleocr: {e}")
         # Fallback to submodule import if top level fails
         try:
             from paddleocr.ppstructure import PPStructure
-        except ImportError:
-             from ppstructure.predict_system import PPStructure
+        except ImportError as e2:
+             logger.error(f"Failed to import PPStructure from paddleocr.ppstructure: {e2}")
+             try:
+                from ppstructure.predict_system import PPStructure
+             except ImportError as e3:
+                logger.error(f"Failed to import PPStructure from ppstructure.predict_system: {e3}")
+                raise e
 
     pp_structure = PPStructure(show_log=False, image_orientation=True)
     logger.info("PPStructure initialized successfully.")
 except Exception as e:
     logger.error(f"Failed to initialize PPStructure: {e}")
+    import traceback
+    logger.error(traceback.format_exc())
     # We will check availability in the endpoint
 
 if not ocr and not pp_structure:

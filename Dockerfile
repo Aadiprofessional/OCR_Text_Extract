@@ -1,35 +1,28 @@
-FROM python:3.9-bullseye
-
-# Install system dependencies
-RUN set -eux; \
-    apt-get update --allow-releaseinfo-change; \
-    apt-get install -y --no-install-recommends \
-        libgl1-mesa-glx \
-        libglib2.0-0 \
-        libgomp1 \
-        curl; \
-    rm -rf /var/lib/apt/lists/*
-
-# Set working directory
-WORKDIR /app
-
-# Copy requirements
-COPY requirements.txt .
-
-# Install python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Download paddleocr models during build (optional but good practice)
-# We try to initialize PPStructureV3 to trigger downloads
-# Note: If PPStructureV3 is not available in the installed version, this might fail build.
-# We will use a try-except block in the build script or just rely on runtime download.
-# For now, let's just copy the code.
-
-# Copy application code
-COPY . .
-
-# Expose port
-EXPOSE 8000
-
-# Command to run the application
+FROM python:3.11-slim 
+ 
+# Install system dependencies 
+RUN apt-get update && apt-get install -y \ 
+    poppler-utils \ 
+    libglib2.0-0 \ 
+    libsm6 \ 
+    libxext6 \ 
+    libxrender-dev \ 
+    libgomp1 \ 
+    wget \ 
+    && rm -rf /var/lib/apt/lists/* 
+ 
+WORKDIR /app 
+ 
+COPY requirements.txt . 
+ 
+# Install Python deps 
+RUN pip install --no-cache-dir -r requirements.txt 
+ 
+# Pre-download PP-StructureV3 models at build time (so first request is fast) 
+RUN python -c "from paddleocr import PPStructureV3; PPStructureV3()" 
+ 
+COPY main.py . 
+ 
+EXPOSE 8000 
+ 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

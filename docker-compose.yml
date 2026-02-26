@@ -1,0 +1,10 @@
+version: "3.8" 
+services: 
+  pp-structure-api: 
+    build: . 
+    ports: 
+      - "8000:8000" 
+    restart: unless-stopped 
+    environment: 
+      - PADDLE_PDX_MODEL_SOURCE=HuggingFace 
+    mem_limit: 4g

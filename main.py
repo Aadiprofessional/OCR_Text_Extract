@@ -8,6 +8,7 @@ import logging
 import numpy as np
 import concurrent.futures
 import time
+import cv2
 
 try:
     from paddleocr import PaddleOCR, PPStructure
@@ -108,6 +109,113 @@ def organize_into_rows(ocr_data, y_threshold=10):
         rows.append(current_row)
         
     return rows
+
+def detect_table_structure_cv2(image_path):
+    """
+    Detects table structure (rows and columns) using OpenCV grid line detection.
+    Returns a list of cell bounding boxes sorted by position.
+    """
+    try:
+        # Read image
+        img = cv2.imread(image_path)
+        if img is None:
+            return []
+            
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # Thresholding
+        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+        
+        # Detect horizontal lines
+        horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40, 1))
+        detect_horizontal = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
+        
+        # Detect vertical lines
+        vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 40))
+        detect_vertical = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, vertical_kernel, iterations=2)
+        
+        # Combine lines to get grid
+        mask = cv2.addWeighted(detect_horizontal, 0.5, detect_vertical, 0.5, 0.0)
+        mask = cv2.threshold(mask, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        
+        # Find contours (potential cells)
+        contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        
+        cells = []
+        for cnt in contours:
+            x, y, w, h = cv2.boundingRect(cnt)
+            # Filter out very small contours or very large (whole page)
+            if w > 20 and h > 10 and w < img.shape[1] * 0.9 and h < img.shape[0] * 0.9:
+                cells.append([x, y, w, h])
+        
+        # Sort cells top-to-bottom, left-to-right
+        # Sorting by Y first with a tolerance for row alignment
+        cells.sort(key=lambda b: (b[1] // 10, b[0]))
+        
+        return cells
+    except Exception as e:
+        logger.error(f"Error in CV2 table detection: {e}")
+        return []
+
+def extract_text_from_cells(image_path, cells):
+    """
+    Extracts text from each detected cell using PaddleOCR.
+    """
+    img = cv2.imread(image_path)
+    table_data = []
+    
+    # Sort cells into rows
+    rows = []
+    if not cells:
+        return []
+        
+    # Simple row clustering
+    current_row = [cells[0]]
+    for i in range(1, len(cells)):
+        prev_y = current_row[-1][1]
+        curr_y = cells[i][1]
+        prev_h = current_row[-1][3]
+        
+        if abs(curr_y - prev_y) < (prev_h * 0.5):
+            current_row.append(cells[i])
+        else:
+            current_row.sort(key=lambda b: b[0])
+            rows.append(current_row)
+            current_row = [cells[i]]
+    if current_row:
+        current_row.sort(key=lambda b: b[0])
+        rows.append(current_row)
+    
+    # Extract text from each cell
+    for row_idx, row_cells in enumerate(rows):
+        row_data = []
+        for col_idx, (x, y, w, h) in enumerate(row_cells):
+            # Crop cell
+            roi = img[y:y+h, x:x+w]
+            
+            # OCR on cell
+            # Using basic OCR here since we cropped to cell
+            try:
+                result = ocr.ocr(roi, cls=False)
+                cell_text = ""
+                if result and result[0]:
+                    texts = [line[1][0] for line in result[0] if line]
+                    cell_text = " ".join(texts)
+                
+                row_data.append({
+                    "row": row_idx,
+                    "col": col_idx,
+                    "text": cell_text.strip(),
+                    "bbox": [x, y, w, h]
+                })
+            except Exception as e:
+                logger.warning(f"OCR failed for cell at {x},{y}: {e}")
+                row_data.append({"text": "", "bbox": [x, y, w, h], "error": str(e)})
+        
+        if row_data:
+            table_data.append(row_data)
+            
+    return table_data
 
 def convert_numpy_types(obj):
     if isinstance(obj, np.integer):
@@ -326,6 +434,22 @@ def process_page_ocr(page_num, temp_img_path):
         cleanup_temp_file(temp_img_path)
 
 def process_page_structure(page_num, temp_img_path):
+    # Try OpenCV Table Detection first (Grid-based)
+    try:
+        cells = detect_table_structure_cv2(temp_img_path)
+        if cells and len(cells) > 5: # Assuming a valid table has at least a few cells
+            logger.info(f"Page {page_num}: Detected {len(cells)} table cells using OpenCV. Extracting text...")
+            table_data = extract_text_from_cells(temp_img_path, cells)
+            return {
+                "page": page_num,
+                "result": table_data,
+                "method": "opencv_grid_detection"
+            }
+        else:
+            logger.info(f"Page {page_num}: No significant grid detected. Falling back to standard OCR.")
+    except Exception as e:
+        logger.error(f"Page {page_num}: OpenCV table detection failed: {e}")
+
     # Fallback to standard OCR if PPStructure is not available
     if not table_engine:
         logger.warning(f"PPStructure not initialized, falling back to standard OCR for page {page_num}")

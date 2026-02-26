@@ -63,6 +63,52 @@ def cleanup_temp_file(path: str):
     except Exception as e:
         logger.error(f"Error cleaning up file {path}: {e}")
 
+def organize_into_rows(ocr_data, y_threshold=10):
+    """
+    Groups OCR results into rows based on Y-coordinates.
+    ocr_data: list of {'box': [[x1,y1]...], 'text': str, 'score': float}
+    """
+    if not ocr_data:
+        return []
+
+    # Sort by Top-Y
+    sorted_data = sorted(ocr_data, key=lambda x: x['box'][0][1])
+    
+    rows = []
+    current_row = []
+    
+    if sorted_data:
+        current_row.append(sorted_data[0])
+        
+    for item in sorted_data[1:]:
+        last_item = current_row[-1]
+        
+        # Calculate vertical center
+        y1_curr = item['box'][0][1]
+        y2_curr = item['box'][2][1]
+        center_y_curr = (y1_curr + y2_curr) / 2
+        
+        y1_last = last_item['box'][0][1]
+        y2_last = last_item['box'][2][1]
+        center_y_last = (y1_last + y2_last) / 2
+        
+        height_last = y2_last - y1_last
+        
+        # Check if the item belongs to the current row (based on center Y overlap)
+        if abs(center_y_curr - center_y_last) < (height_last * 0.5):
+            current_row.append(item)
+        else:
+            # Sort current row by X coordinate (left to right)
+            current_row.sort(key=lambda x: x['box'][0][0])
+            rows.append(current_row)
+            current_row = [item]
+            
+    if current_row:
+        current_row.sort(key=lambda x: x['box'][0][0])
+        rows.append(current_row)
+        
+    return rows
+
 def convert_numpy_types(obj):
     if isinstance(obj, np.integer):
         return int(obj)
@@ -96,12 +142,35 @@ def process_ocr_result(result):
     if not result:
         return processed_result
 
-    # Handle list of dicts (new format)
+    # Handle list of dicts (new format, common in newer PaddleOCR versions)
     if isinstance(result, list) and len(result) > 0 and isinstance(result[0], dict):
         for res in result:
-            processed_result.append(convert_numpy_types(res))
+            # Check if it has parallel lists (rec_texts, rec_scores, dt_polys)
+            if 'rec_texts' in res and isinstance(res['rec_texts'], list):
+                texts = res['rec_texts']
+                # Prefer 'dt_polys' (detection polygons) or 'rec_polys' (recognition polygons)
+                # dt_polys seems to be the standard key for boxes in this format
+                boxes = res.get('dt_polys', [])
+                if not boxes:
+                    boxes = res.get('rec_polys', [])
+                
+                scores = res.get('rec_scores', [])
+                
+                # Zip them together if lengths match (or truncating to shortest)
+                limit = min(len(texts), len(boxes))
+                for i in range(limit):
+                    item = {
+                        "box": convert_numpy_types(boxes[i]),
+                        "text": texts[i],
+                        "score": convert_numpy_types(scores[i]) if i < len(scores) else 0.0
+                    }
+                    processed_result.append(item)
+            else:
+                # Fallback: just append the dict if it doesn't match known structure
+                # But filter large fields
+                processed_result.append(convert_numpy_types(res))
             
-    # Handle legacy format (list of lists)
+    # Handle legacy format (list of lists: [[[box], [text, score]], ...])
     elif isinstance(result, list) and len(result) > 0 and isinstance(result[0], list):
         ocr_result = result[0]
         for line in ocr_result:
@@ -234,9 +303,17 @@ def process_page_ocr(page_num, temp_img_path):
         except Exception:
             pass # Keep original order if sorting fails
 
+        # Organize into table-like rows
+        try:
+            structured_rows = organize_into_rows(page_data)
+        except Exception as e:
+            logger.warning(f"Failed to organize rows for page {page_num}: {e}")
+            structured_rows = []
+
         return {
             "page": page_num,
-            "result": page_data
+            "result": structured_rows,  # Return structured rows as the main result
+            "raw_data": page_data       # Keep flat list if needed
         }
     except Exception as e:
         logger.error(f"Error processing page {page_num}: {e}")

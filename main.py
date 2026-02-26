@@ -605,11 +605,25 @@ def process_page_structure(page_num, temp_img_path, method: str = "auto"):
                 page_data = []
                 if isinstance(result, list):
                     for region in result:
+                        # Handle potential custom objects from PPStructureV3
+                        if hasattr(region, 'to_dict'):
+                             region = region.to_dict()
+                        elif not isinstance(region, dict) and hasattr(region, '__dict__'):
+                             # Filter out private attributes
+                             region = {k: v for k, v in region.__dict__.items() if not k.startswith('_')}
+
                         # Remove large image data if present (it's usually in 'img' key)
                         # convert_numpy_types handles filtering 'img' key
                         clean_region = convert_numpy_types(region)
                         page_data.append(clean_region)
                 else:
+                    # Handle potential custom objects from PPStructureV3
+                    if hasattr(result, 'to_dict'):
+                         result = result.to_dict()
+                    elif not isinstance(result, dict) and hasattr(result, '__dict__'):
+                         # Filter out private attributes
+                         result = {k: v for k, v in result.__dict__.items() if not k.startswith('_')}
+
                     page_data = convert_numpy_types(result)
 
                 return {

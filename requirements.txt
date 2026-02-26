@@ -1,8 +1,5 @@
 fastapi
 uvicorn
 paddlepaddle
-paddleocr>=2.6.0.3
+paddleocr>=2.7.0
 requests
-opencv-python-headless
-PyMuPDF
-img2table

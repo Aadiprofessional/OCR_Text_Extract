@@ -7,7 +7,8 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libxrender-dev \
     libgomp1 \
-    libgl1-mesa-glx \
+    libgl1 \
+    libgles2 \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
@@ -15,7 +16,6 @@ WORKDIR /app
 
 COPY requirements.txt .
 
-# Install paddlepaddle CPU first, then paddleocr
 RUN pip install --no-cache-dir paddlepaddle==3.0.0 -i https://pypi.tuna.tsinghua.edu.cn/simple
 RUN pip install --no-cache-dir "paddleocr[all]==3.0.3"
 RUN pip install --no-cache-dir fastapi uvicorn pdf2image pillow requests python-multipart

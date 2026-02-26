@@ -3,19 +3,20 @@ import requests
 import fitz  # PyMuPDF
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
+import tempfile
+import logging
+import numpy as np
+import concurrent.futures
+import time
+
 try:
     from paddleocr import PaddleOCR, PPStructure
 except ImportError:
     # Fallback for older versions or if PPStructure is missing
     from paddleocr import PaddleOCR
     PPStructure = None
-    logging.warning("PPStructure not found in paddleocr module. Table extraction will be disabled/limited.")
-
-import tempfile
-import logging
-import numpy as np
-import concurrent.futures
-import time
+    # Can't use logging here yet as it's not imported/configured
+    print("WARNING: PPStructure not found in paddleocr module. Table extraction will be disabled/limited.")
 
 # Initialize FastAPI app
 app = FastAPI(title="PaddleOCR API", description="API to extract text from PDF URLs using PaddleOCR")
@@ -43,7 +44,7 @@ try:
         logger.info("PPStructure initialized successfully.")
     else:
         table_engine = None
-        logger.warning("PPStructure not available. Table extraction will fail.")
+        logger.warning("PPStructure not available (ImportError). Table extraction will fail.")
 
 except Exception as e:
     logger.error(f"Failed to initialize OCR engines: {e}")

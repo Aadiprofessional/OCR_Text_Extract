@@ -3,7 +3,13 @@ import requests
 import fitz  # PyMuPDF
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from paddleocr import PaddleOCR, PPStructure
+# PaddleOCR imports moved to inside the try/except block to handle import errors
+try:
+    from paddleocr import PaddleOCR
+except ImportError:
+    # If paddleocr is not installed or import fails
+    PaddleOCR = None
+
 import tempfile
 import logging
 import numpy as np
@@ -27,8 +33,11 @@ pp_structure = None
 
 try:
     # Removed use_gpu=False as it caused ValueError: Unknown argument: use_gpu
-    ocr = PaddleOCR(use_angle_cls=True, lang='en', enable_mkldnn=False)
-    logger.info("PaddleOCR initialized successfully.")
+    if PaddleOCR:
+        ocr = PaddleOCR(use_angle_cls=True, lang='en', enable_mkldnn=False)
+        logger.info("PaddleOCR initialized successfully.")
+    else:
+        logger.error("PaddleOCR module not found.")
 except Exception as e:
     logger.error(f"Failed to initialize PaddleOCR: {e}")
     # Don't raise here to allow partial initialization if possible, or raise later if critical
@@ -36,6 +45,16 @@ except Exception as e:
 try:
     # Initialize PPStructure for layout analysis and table extraction
     # show_log=False reduces console spam
+    try:
+        # Try importing from top level
+        from paddleocr import PPStructure
+    except ImportError:
+        # Fallback to submodule import if top level fails
+        try:
+            from paddleocr.ppstructure import PPStructure
+        except ImportError:
+             from ppstructure.predict_system import PPStructure
+
     pp_structure = PPStructure(show_log=False, image_orientation=True)
     logger.info("PPStructure initialized successfully.")
 except Exception as e:

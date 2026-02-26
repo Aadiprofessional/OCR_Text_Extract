@@ -2,7 +2,6 @@ fastapi
 uvicorn
 paddlepaddle>=2.6.0
 paddleocr>=2.7.0
-paddleclas>=2.4.3
 shapely
 pyclipper
 layoutparser

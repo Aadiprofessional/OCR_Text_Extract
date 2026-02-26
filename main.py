@@ -61,7 +61,7 @@ try:
                 logger.error(f"Failed to import PPStructure from ppstructure.predict_system: {e3}")
                 raise e
 
-    pp_structure = PPStructure(show_log=False, image_orientation=True)
+    pp_structure = PPStructure(show_log=False, image_orientation=False)
     logger.info("PPStructure initialized successfully.")
 except Exception as e:
     logger.error(f"Failed to initialize PPStructure: {e}")

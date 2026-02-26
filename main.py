@@ -177,10 +177,10 @@ async def extract_text(request: PDFRequest, background_tasks: BackgroundTasks):
         if temp_pdf_path:
             background_tasks.add_task(cleanup_temp_file, temp_pdf_path)
 
-@app.post("/extract-text-with-position")
-async def extract_text_with_position(request: PDFRequest, background_tasks: BackgroundTasks):
-    url = request.url
-    logger.info(f"Received request for URL: {url} (with position)")
+@app.post("/extract-table-text")
+async def extract_table_text(request: PDFRequest, background_tasks: BackgroundTasks):
+    url = request.url.strip()
+    logger.info(f"Received request for URL: {url} (extract-table-text)")
 
     temp_pdf_path = None
     

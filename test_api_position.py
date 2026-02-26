@@ -4,7 +4,7 @@ import time
 
 def test_api_position():
     # Change to your server URL if different
-    url = "http://localhost:8000/extract-text-with-position"
+    url = "http://localhost:8000/extract-table-text"
     payload = {
         "url": "https://www.princexml.com/samples/catalogue/PrinceCatalogue.pdf"
     }

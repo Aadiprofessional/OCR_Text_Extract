@@ -203,7 +203,10 @@ def extract_text_from_cells(image_path, cells):
             # OCR on cell
             # Using basic OCR here since we cropped to cell
             try:
-                result = ocr.ocr(roi, cls=False)
+                # The 'cls' argument was causing errors on some PaddleOCR versions
+                # when called on a cropped image (numpy array).
+                # We can try calling it without cls=False first.
+                result = ocr.ocr(roi)
                 cell_text = ""
                 if result and result[0]:
                     texts = [line[1][0] for line in result[0] if line]
@@ -447,7 +450,10 @@ def process_page_structure(page_num, temp_img_path):
             logger.info(f"Page {page_num}: Attempting img2table extraction...")
             # Initialize img2table's PaddleOCR wrapper
             # We use 'en' language by default
-            ocr_img2table = Img2TablePaddleOCR(lang='en')
+            # Explicitly set use_angle_cls=True to match our main OCR config
+            # And disable mkldnn if possible via kwarg if supported, or rely on env
+            # img2table passes kwargs to PaddleOCR constructor
+            ocr_img2table = Img2TablePaddleOCR(lang='en', use_angle_cls=True, enable_mkldnn=False)
             
             # Create Image object
             doc = Img2TableImage(src=temp_img_path)

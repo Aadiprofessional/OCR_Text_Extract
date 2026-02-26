@@ -1,55 +1,44 @@
-# PaddleOCR API
+# PaddleOCR API with PP-StructureV3
 
-This is a FastAPI-based API that accepts a PDF URL, extracts text using PaddleOCR, and returns the result.
+This API uses **PP-StructureV3** (via PaddleOCR) to extract text and tables from PDF documents. It handles complex layouts and tables automatically and returns the content in Markdown format.
+
+## Features
+
+- **End-to-End Extraction**: Uses `PP-StructureV3` exclusively for document understanding.
+- **Table Support**: Automatically detects and extracts tables into Markdown tables.
+- **PDF Support**: Downloads and processes multi-page PDFs directly.
+- **Markdown Output**: Returns the full document content as a concatenated Markdown string.
 
 ## Prerequisites
 
-- Docker
-- Coolify (or any other Docker-based deployment platform)
+- Python 3.8 - 3.10 (Recommended for PaddlePaddle)
+- Docker (optional but recommended for consistent environment)
 
 ## Local Development
 
-1. **Install Dependencies**:
-   Note: PaddlePaddle requires specific python versions (3.8-3.12 recommended).
-   ```bash
-   pip install -r requirements.txt
-   ```
+1.  **Install Dependencies**:
+    ```bash
+    pip install -r requirements.txt
+    ```
+    *Note: If you are on macOS with Apple Silicon (M1/M2), ensure you install the correct `paddlepaddle` wheel or use Docker.*
 
-2. **Run the API**:
-   ```bash
-   python main.py
-   ```
-   The API will be available at `http://localhost:8000`.
+2.  **Run the API**:
+    ```bash
+    python main.py
+    ```
+    The API will be available at `http://localhost:8000`.
 
-## Deployment to Coolify
+## Deployment (Docker / Coolify)
 
-This project is ready to be deployed to Coolify.
+1.  **Build and Run with Docker**:
+    ```bash
+    docker-compose up --build
+    ```
 
-### Steps:
-
-1.  **Push to Git Repository**:
-    - Push this code to a GitHub/GitLab/Bitbucket repository.
-
-2.  **Create Service in Coolify**:
-    - Go to your Coolify dashboard.
-    - Create a new **Project** -> **New Resource**.
-    - Select **Application** -> **Public/Private Repository**.
-    - Enter your repository URL and select the branch.
-
-3.  **Configuration**:
-    - **Build Pack**: Select **Docker Compose**.
-    - **Docker Compose Location**: `/docker-compose.yaml` (should be default).
-    - **Domains**: Configure your domain (e.g., `https://ocr-api.yourdomain.com`).
-    - **Port**: You do **NOT** need to set a port in the Coolify UI if you are using the provided `docker-compose.yaml`. The file is configured to expose port 8000 internally.
-
-4.  **Deploy**:
-    - Click **Deploy**.
-    - Coolify will build the Docker image and start the container.
-    - Watch the build logs to ensure `paddlepaddle` and models are downloaded correctly.
-
-### Environment Variables
-
-No special environment variables are required for basic usage.
+2.  **Deploy to Coolify**:
+    - Connect your repository.
+    - Use **Docker Compose** build pack.
+    - Deploy.
 
 ## API Usage
 
@@ -68,11 +57,11 @@ No special environment variables are required for basic usage.
 ```json
 {
   "status": "success",
-  "data": [
-    {
-      "page": 1,
-      "text": "Extracted text content..."
-    }
-  ]
+  "markdown": "# Document Title\n\nSome text content...\n\n| Table | Header |\n|-------|--------|\n| Cell  | Cell   |\n\n...",
+  "details": [ ...structured data per page... ]
 }
 ```
+
+### Endpoint: `/extract-table-text`
+
+Alias for `/extract-text`.

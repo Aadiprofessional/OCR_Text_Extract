@@ -26,13 +26,13 @@ logger = logging.getLogger(__name__)
 pipeline = None
 if PP_STRUCTURE_AVAILABLE:
     try:
-        # Initialize with default settings (Chinese/English)
-        # User snippet: pipeline = PPStructureV3()
-        # We can pass lang='en' if we want to prioritize English, but default is usually fine.
-        # User mentioned: "The default text recognition model... is Chinese and English... for pure English... you can set text_recognition_model_name='en_PP-OCRv4_mobile_rec'"
-        # Let's stick to default for now unless user asked for English specific.
-        # The user snippet had commented out lang="en".
-        pipeline = PPStructureV3(use_gpu=False) # set use_gpu=False for compatibility if no GPU
+        # Set environment variable to bypass model source check as suggested in logs
+        os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
+        
+        # Initialize with default settings
+        # changed use_gpu=False to device='cpu' based on error "Unknown argument: use_gpu"
+        # and user's snippet showing device="gpu" is the correct arg.
+        pipeline = PPStructureV3(device='cpu') 
         logger.info("PPStructureV3 initialized successfully.")
     except Exception as e:
         logger.error(f"Failed to initialize PPStructureV3: {e}")

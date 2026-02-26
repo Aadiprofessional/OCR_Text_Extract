@@ -295,15 +295,17 @@ def convert_numpy_types(obj):
         return int(obj)
     elif isinstance(obj, (np.floating, np.float16, np.float32, np.float64)):
         return float(obj)
+    elif isinstance(obj, (np.bool_, bool)):
+        return bool(obj)
     elif isinstance(obj, np.ndarray):
         # Truncate large arrays (likely images) to avoid JSON bloat
         if obj.size > 100:
              return f"<large_array_shape_{obj.shape}>"
         return [convert_numpy_types(x) for x in obj.tolist()]
-    elif isinstance(obj, list):
+    elif isinstance(obj, (list, tuple, set)):
         # Recursively check list items, truncate large lists
-        if len(obj) > 100 and isinstance(obj[0], (int, float, np.integer, np.floating)):
-             return f"<large_list_len_{len(obj)}>"
+        if len(obj) > 100 and len(obj) > 0 and isinstance(next(iter(obj)), (int, float, np.integer, np.floating)):
+             return f"<large_collection_len_{len(obj)}>"
         return [convert_numpy_types(i) for i in obj]
     elif isinstance(obj, dict):
         # Filter out keys that might contain large data (e.g. 'img', 'pixels')
@@ -315,6 +317,21 @@ def convert_numpy_types(obj):
                 clean_dict[k] = convert_numpy_types(v)
         return clean_dict
     else:
+        # Fallback for other objects that might have __dict__ or custom types
+        if hasattr(obj, '__dict__'):
+            try:
+                return convert_numpy_types(vars(obj))
+            except Exception:
+                return str(obj)
+        elif hasattr(obj, 'to_dict'):
+            try:
+                return convert_numpy_types(obj.to_dict())
+            except Exception:
+                return str(obj)
+        # Check if it's a basic type we missed or something else
+        if not isinstance(obj, (str, int, float, bool, type(None))):
+             # Try to convert to string if it's not JSON serializable
+             return str(obj)
         return obj
 
 def process_ocr_result(result):

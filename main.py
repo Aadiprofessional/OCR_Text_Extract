@@ -3,7 +3,14 @@ import requests
 import fitz  # PyMuPDF
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from paddleocr import PaddleOCR, PPStructure
+try:
+    from paddleocr import PaddleOCR, PPStructure
+except ImportError:
+    # Fallback for older versions or if PPStructure is missing
+    from paddleocr import PaddleOCR
+    PPStructure = None
+    logging.warning("PPStructure not found in paddleocr module. Table extraction will be disabled/limited.")
+
 import tempfile
 import logging
 import numpy as np
@@ -31,8 +38,13 @@ try:
     
     # Initialize PPStructure for table extraction
     # This might download models on first run
-    table_engine = PPStructure(show_log=True, image_orientation=True)
-    logger.info("PPStructure initialized successfully.")
+    if PPStructure:
+        table_engine = PPStructure(show_log=True, image_orientation=True)
+        logger.info("PPStructure initialized successfully.")
+    else:
+        table_engine = None
+        logger.warning("PPStructure not available. Table extraction will fail.")
+
 except Exception as e:
     logger.error(f"Failed to initialize OCR engines: {e}")
     # Don't crash immediately, let specific routes fail if needed, or re-raise
@@ -227,6 +239,9 @@ def process_page_ocr(page_num, temp_img_path):
         cleanup_temp_file(temp_img_path)
 
 def process_page_structure(page_num, temp_img_path):
+    if not table_engine:
+         return {"page": page_num, "error": "PPStructure not initialized"}
+
     try:
         start_time = time.time()
         # Run Structure Analysis on the image

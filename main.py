@@ -75,8 +75,8 @@ try:
     if PPStructure:
         try:
              table_engine = PPStructure(show_log=True, image_orientation=True)
-        except TypeError:
-             logger.info("Standard PPStructure init failed, trying PPStructureV3 args...")
+        except (TypeError, ValueError):
+             logger.info("Standard PPStructure init failed (unknown args), trying PPStructureV3 args...")
              table_engine = PPStructure(use_doc_orientation_classify=True, use_doc_unwarping=False)
         logger.info(f"{PPStructure.__name__} initialized successfully.")
     else:

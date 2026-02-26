@@ -37,7 +37,7 @@ try:
         try:
              # Try standard init
              table_engine = PPStructure(show_log=True, image_orientation=True)
-        except TypeError:
+        except (TypeError, ValueError):
              # PPStructureV3 might have different args
              print("Standard init failed, trying PPStructureV3 args...")
              table_engine = PPStructure(use_doc_orientation_classify=True, use_doc_unwarping=False)

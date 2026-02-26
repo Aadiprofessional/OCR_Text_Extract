@@ -21,11 +21,25 @@ except ImportError:
 try:
     from paddleocr import PaddleOCR, PPStructure
 except ImportError:
-    # Fallback for older versions or if PPStructure is missing
-    from paddleocr import PaddleOCR
-    PPStructure = None
-    # Can't use logging here yet as it's not imported/configured
-    print("WARNING: PPStructure not found in paddleocr module. Table extraction will be disabled/limited.")
+    try:
+        from paddleocr import PaddleOCR, PPStructureV2 as PPStructure
+    except ImportError:
+        try:
+             from paddleocr import PPStructureV3 as PPStructure
+             # If successful, we need PaddleOCR too
+             try:
+                 from paddleocr import PaddleOCR
+             except ImportError:
+                 pass
+        except ImportError:
+            # Fallback for older versions or if PPStructure is missing
+            try:
+                from paddleocr import PaddleOCR
+            except ImportError:
+                PaddleOCR = None
+            PPStructure = None
+            # Can't use logging here yet as it's not imported/configured
+            print("WARNING: PPStructure not found in paddleocr module. Table extraction will be disabled/limited.")
 
 # Initialize FastAPI app
 app = FastAPI(title="PaddleOCR API", description="API to extract text from PDF URLs using PaddleOCR")
@@ -42,15 +56,29 @@ logger = logging.getLogger(__name__)
 # 'use_gpu' is not a valid argument for the new Pipeline-based API in some versions.
 # We will try to set it via environment variable if needed, or rely on defaults.
 try:
-    # Removed use_gpu=False as it caused ValueError: Unknown argument: use_gpu
-    ocr = PaddleOCR(use_angle_cls=True, lang='en', enable_mkldnn=False)
-    logger.info("PaddleOCR initialized successfully.")
+    # Set environment variables to avoid permission errors and connectivity checks
+    os.environ['PADDLEOCR_CACHE_DIR'] = '/tmp/paddleocr_cache'
+    os.environ['PADDLEX_HOME'] = '/tmp/paddlex'
+    os.environ['PADDLE_PDX_CACHE_HOME'] = '/tmp/paddlex_home'
+    os.environ['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'True'
+    
+    if PaddleOCR:
+        # Removed use_gpu=False as it caused ValueError: Unknown argument: use_gpu
+        ocr = PaddleOCR(use_angle_cls=True, lang='en', enable_mkldnn=False)
+        logger.info("PaddleOCR initialized successfully.")
+    else:
+        logger.error("PaddleOCR class not found.")
+        ocr = None
     
     # Initialize PPStructure for table extraction
     # This might download models on first run
     if PPStructure:
-        table_engine = PPStructure(show_log=True, image_orientation=True)
-        logger.info("PPStructure initialized successfully.")
+        try:
+             table_engine = PPStructure(show_log=True, image_orientation=True)
+        except TypeError:
+             logger.info("Standard PPStructure init failed, trying PPStructureV3 args...")
+             table_engine = PPStructure(use_doc_orientation_classify=True, use_doc_unwarping=False)
+        logger.info(f"{PPStructure.__name__} initialized successfully.")
     else:
         table_engine = None
         logger.warning("PPStructure not available (ImportError). Table extraction will fail.")

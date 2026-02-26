@@ -291,15 +291,15 @@ def extract_text_from_cells(image_path, cells):
     return table_data
 
 def convert_numpy_types(obj):
-    if isinstance(obj, np.integer):
+    if isinstance(obj, (np.integer, np.int16, np.int32, np.int64)):
         return int(obj)
-    elif isinstance(obj, np.floating):
+    elif isinstance(obj, (np.floating, np.float16, np.float32, np.float64)):
         return float(obj)
     elif isinstance(obj, np.ndarray):
         # Truncate large arrays (likely images) to avoid JSON bloat
         if obj.size > 100:
              return f"<large_array_shape_{obj.shape}>"
-        return obj.tolist()
+        return [convert_numpy_types(x) for x in obj.tolist()]
     elif isinstance(obj, list):
         # Recursively check list items, truncate large lists
         if len(obj) > 100 and isinstance(obj[0], (int, float, np.integer, np.floating)):

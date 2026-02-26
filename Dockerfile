@@ -24,7 +24,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Download paddleocr models during build to avoid downloading them at runtime
 # We can do this by running a simple python script that initializes PaddleOCR
-RUN python -c "from paddleocr import PaddleOCR; PaddleOCR(use_angle_cls=True, lang='en')"
+RUN python -c "from paddleocr import PaddleOCR, PPStructure; PaddleOCR(use_angle_cls=True, lang='en'); PPStructure(show_log=True, image_orientation=True)"
 
 # Copy application code
 COPY . .

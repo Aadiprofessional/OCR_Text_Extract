@@ -9,6 +9,7 @@ import numpy as np
 import concurrent.futures
 import time
 import cv2
+from typing import Optional
 try:
     from img2table.ocr import PaddleOCR as Img2TablePaddleOCR
     from img2table.document import Image as Img2TableImage
@@ -62,6 +63,7 @@ except Exception as e:
 
 class PDFRequest(BaseModel):
     url: str
+    method: Optional[str] = "auto"
 
 def cleanup_temp_file(path: str):
     try:
@@ -463,123 +465,130 @@ def process_page_ocr(page_num, temp_img_path):
         # Clean up image file immediately after OCR is done
         cleanup_temp_file(temp_img_path)
 
-def process_page_structure(page_num, temp_img_path):
-    # Try img2table with PaddleOCR first
-    if IMG2TABLE_AVAILABLE:
-        try:
-            logger.info(f"Page {page_num}: Attempting img2table extraction...")
-            # Initialize img2table's PaddleOCR wrapper
-            # We use 'en' language by default
-            # Explicitly set enable_mkldnn=False to avoid crash
-            # Removed use_angle_cls=True as it caused TypeError in img2table
-            ocr_img2table = Img2TablePaddleOCR(lang='en', enable_mkldnn=False)
-            
-            # Create Image object
-            doc = Img2TableImage(src=temp_img_path)
-            
-            # Extract tables
-            # implicit_rows=False helps avoid merging separate text lines into one row incorrectly
-            extracted_tables = doc.extract_tables(ocr=ocr_img2table, implicit_rows=False, borderless_tables=False, min_confidence=50)
-            
-            if extracted_tables:
-                logger.info(f"Page {page_num}: img2table detected {len(extracted_tables)} tables.")
+def process_page_structure(page_num, temp_img_path, method: str = "auto"):
+    try:
+        # Try img2table with PaddleOCR first
+        if (method == "auto" or method == "img2table") and IMG2TABLE_AVAILABLE:
+            try:
+                logger.info(f"Page {page_num}: Attempting img2table extraction...")
+                # Initialize img2table's PaddleOCR wrapper
+                # We use 'en' language by default
+                # Explicitly set enable_mkldnn=False to avoid crash
+                ocr_img2table = Img2TablePaddleOCR(lang='en', enable_mkldnn=False)
                 
-                # Format result
-                tables_data = []
-                for table_idx, table in enumerate(extracted_tables):
-                    table_content = []
-                    # table.df is a pandas dataframe, but we might want raw cells for bbox info
-                    # table.content is a dict of rows
-                    
-                    # Convert to our format: list of rows, each row is list of cells
-                    # We need to handle potential sparse rows
-                    
-                    # Get all rows sorted
-                    rows = sorted(table.content.keys())
-                    for row_id in rows:
-                        row_cells = table.content[row_id]
-                        formatted_row = []
-                        # Sort cells in row by column index
-                        cols = sorted(row_cells)
-                        for cell in cols:
-                            cell_obj = row_cells[cell]
-                            formatted_row.append({
-                                "text": cell_obj.value,
-                                "bbox": [cell_obj.bbox.x1, cell_obj.bbox.y1, cell_obj.bbox.x2 - cell_obj.bbox.x1, cell_obj.bbox.y2 - cell_obj.bbox.y1],
-                                "row": row_id,
-                                "col": cell_obj.col
-                            })
-                        table_content.append(formatted_row)
-                    
-                    tables_data.append({
-                        "table_index": table_idx,
-                        "content": table_content,
-                        "html": table.html
-                    })
+                # Create Image object
+                doc = Img2TableImage(src=temp_img_path)
                 
+                # Extract tables
+                # implicit_rows=False helps avoid merging separate text lines into one row incorrectly
+                extracted_tables = doc.extract_tables(ocr=ocr_img2table, implicit_rows=False, borderless_tables=False, min_confidence=50)
+                
+                if extracted_tables:
+                    logger.info(f"Page {page_num}: img2table detected {len(extracted_tables)} tables.")
+                    
+                    # Format result
+                    tables_data = []
+                    for table_idx, table in enumerate(extracted_tables):
+                        table_content = []
+                        # table.df is a pandas dataframe, but we might want raw cells for bbox info
+                        # table.content is a dict of rows
+                        
+                        # Convert to our format: list of rows, each row is list of cells
+                        # We need to handle potential sparse rows
+                        
+                        # Get all rows sorted
+                        rows = sorted(table.content.keys())
+                        for row_id in rows:
+                            row_cells = table.content[row_id]
+                            formatted_row = []
+                            # Sort cells in row by column index
+                            cols = sorted(row_cells)
+                            for cell in cols:
+                                cell_obj = row_cells[cell]
+                                formatted_row.append({
+                                    "text": cell_obj.value,
+                                    "bbox": [cell_obj.bbox.x1, cell_obj.bbox.y1, cell_obj.bbox.x2 - cell_obj.bbox.x1, cell_obj.bbox.y2 - cell_obj.bbox.y1],
+                                    "row": row_id,
+                                    "col": cell_obj.col
+                                })
+                            table_content.append(formatted_row)
+                        
+                        tables_data.append({
+                            "table_index": table_idx,
+                            "content": table_content,
+                            "html": table.html
+                        })
+                    
+                    return {
+                        "page": page_num,
+                        "result": tables_data,
+                        "method": "img2table"
+                    }
+                else:
+                     logger.info(f"Page {page_num}: img2table found no tables.")
+            except Exception as e:
+                logger.error(f"Page {page_num}: img2table extraction failed: {e}")
+
+        # Try OpenCV Table Detection first (Grid-based)
+        if method == "auto" or method == "opencv":
+            try:
+                cells = detect_table_structure_cv2(temp_img_path)
+                if cells and len(cells) > 5: # Assuming a valid table has at least a few cells
+                    logger.info(f"Page {page_num}: Detected {len(cells)} table cells using OpenCV. Extracting text...")
+                    table_data = extract_text_from_cells(temp_img_path, cells)
+                    return {
+                        "page": page_num,
+                        "result": table_data,
+                        "method": "opencv_grid_detection"
+                    }
+                else:
+                    logger.info(f"Page {page_num}: No significant grid detected. Falling back to standard OCR.")
+            except Exception as e:
+                logger.error(f"Page {page_num}: OpenCV table detection failed: {e}")
+
+        # Fallback to standard OCR if PPStructure is not available
+        if not table_engine:
+            logger.warning(f"PPStructure not initialized, falling back to standard OCR for page {page_num}")
+            return process_page_ocr(page_num, temp_img_path)
+
+        if method == "auto" or method == "pp_structure":
+            try:
+                start_time = time.time()
+                # Run Structure Analysis on the image
+                # This returns a list of regions (tables, figures, text, etc.)
+                # Each region has 'type', 'bbox', 'res' (html for tables, text for others), and 'img' (cropped image)
+                result = table_engine(temp_img_path)
+                logger.info(f"Page {page_num} Structure Analysis processed in {time.time() - start_time:.2f}s")
+                
+                # Log result type
+                if result:
+                     logger.debug(f"Page {page_num} structure result type: {type(result)}")
+
+                # Process result to remove large images and convert types
+                page_data = []
+                if isinstance(result, list):
+                    for region in result:
+                        # Remove large image data if present (it's usually in 'img' key)
+                        # convert_numpy_types handles filtering 'img' key
+                        clean_region = convert_numpy_types(region)
+                        page_data.append(clean_region)
+                else:
+                    page_data = convert_numpy_types(result)
+
                 return {
                     "page": page_num,
-                    "result": tables_data,
-                    "method": "img2table"
+                    "result": page_data
                 }
-            else:
-                 logger.info(f"Page {page_num}: img2table found no tables.")
-        except Exception as e:
-            logger.error(f"Page {page_num}: img2table extraction failed: {e}")
-
-    # Try OpenCV Table Detection first (Grid-based)
-    try:
-        cells = detect_table_structure_cv2(temp_img_path)
-        if cells and len(cells) > 5: # Assuming a valid table has at least a few cells
-            logger.info(f"Page {page_num}: Detected {len(cells)} table cells using OpenCV. Extracting text...")
-            table_data = extract_text_from_cells(temp_img_path, cells)
-            return {
-                "page": page_num,
-                "result": table_data,
-                "method": "opencv_grid_detection"
-            }
-        else:
-            logger.info(f"Page {page_num}: No significant grid detected. Falling back to standard OCR.")
-    except Exception as e:
-        logger.error(f"Page {page_num}: OpenCV table detection failed: {e}")
-
-    # Fallback to standard OCR if PPStructure is not available
-    if not table_engine:
-        logger.warning(f"PPStructure not initialized, falling back to standard OCR for page {page_num}")
-        return process_page_ocr(page_num, temp_img_path)
-
-    try:
-        start_time = time.time()
-        # Run Structure Analysis on the image
-        # This returns a list of regions (tables, figures, text, etc.)
-        # Each region has 'type', 'bbox', 'res' (html for tables, text for others), and 'img' (cropped image)
-        result = table_engine(temp_img_path)
-        logger.info(f"Page {page_num} Structure Analysis processed in {time.time() - start_time:.2f}s")
+            except Exception as e:
+                logger.error(f"Error processing structure for page {page_num}: {e}")
+                return {
+                    "page": page_num,
+                    "error": str(e)
+                }
         
-        # Log result type
-        if result:
-             logger.debug(f"Page {page_num} structure result type: {type(result)}")
-
-        # Process result to remove large images and convert types
-        page_data = []
-        if isinstance(result, list):
-            for region in result:
-                # Remove large image data if present (it's usually in 'img' key)
-                # convert_numpy_types handles filtering 'img' key
-                clean_region = convert_numpy_types(region)
-                page_data.append(clean_region)
-        else:
-            page_data = convert_numpy_types(result)
-
         return {
             "page": page_num,
-            "result": page_data
-        }
-    except Exception as e:
-        logger.error(f"Error processing structure for page {page_num}: {e}")
-        return {
-            "page": page_num,
-            "error": str(e)
+            "error": "No suitable extraction method found or all failed."
         }
     finally:
         # Clean up image file immediately
@@ -629,7 +638,7 @@ async def extract_table_text(request: PDFRequest, background_tasks: BackgroundTa
         # Structure analysis can be heavy, so limit workers if needed
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             # Use process_page_structure instead of process_page_ocr
-            future_to_page = {executor.submit(process_page_structure, p_num, p_path): p_num for p_num, p_path in page_tasks}
+            future_to_page = {executor.submit(process_page_structure, p_num, p_path, request.method): p_num for p_num, p_path in page_tasks}
             
             for future in concurrent.futures.as_completed(future_to_page):
                 try:

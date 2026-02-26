@@ -9,6 +9,13 @@ import numpy as np
 import concurrent.futures
 import time
 import cv2
+try:
+    from img2table.ocr import PaddleOCR as Img2TablePaddleOCR
+    from img2table.document import Image as Img2TableImage
+    IMG2TABLE_AVAILABLE = True
+except ImportError:
+    IMG2TABLE_AVAILABLE = False
+    print("WARNING: img2table not found. Advanced table extraction disabled.")
 
 try:
     from paddleocr import PaddleOCR, PPStructure
@@ -434,6 +441,67 @@ def process_page_ocr(page_num, temp_img_path):
         cleanup_temp_file(temp_img_path)
 
 def process_page_structure(page_num, temp_img_path):
+    # Try img2table with PaddleOCR first
+    if IMG2TABLE_AVAILABLE:
+        try:
+            logger.info(f"Page {page_num}: Attempting img2table extraction...")
+            # Initialize img2table's PaddleOCR wrapper
+            # We use 'en' language by default
+            ocr_img2table = Img2TablePaddleOCR(lang='en')
+            
+            # Create Image object
+            doc = Img2TableImage(src=temp_img_path)
+            
+            # Extract tables
+            # implicit_rows=False helps avoid merging separate text lines into one row incorrectly
+            extracted_tables = doc.extract_tables(ocr=ocr_img2table, implicit_rows=False, borderless_tables=False, min_confidence=50)
+            
+            if extracted_tables:
+                logger.info(f"Page {page_num}: img2table detected {len(extracted_tables)} tables.")
+                
+                # Format result
+                tables_data = []
+                for table_idx, table in enumerate(extracted_tables):
+                    table_content = []
+                    # table.df is a pandas dataframe, but we might want raw cells for bbox info
+                    # table.content is a dict of rows
+                    
+                    # Convert to our format: list of rows, each row is list of cells
+                    # We need to handle potential sparse rows
+                    
+                    # Get all rows sorted
+                    rows = sorted(table.content.keys())
+                    for row_id in rows:
+                        row_cells = table.content[row_id]
+                        formatted_row = []
+                        # Sort cells in row by column index
+                        cols = sorted(row_cells)
+                        for cell in cols:
+                            cell_obj = row_cells[cell]
+                            formatted_row.append({
+                                "text": cell_obj.value,
+                                "bbox": [cell_obj.bbox.x1, cell_obj.bbox.y1, cell_obj.bbox.x2 - cell_obj.bbox.x1, cell_obj.bbox.y2 - cell_obj.bbox.y1],
+                                "row": row_id,
+                                "col": cell_obj.col
+                            })
+                        table_content.append(formatted_row)
+                    
+                    tables_data.append({
+                        "table_index": table_idx,
+                        "content": table_content,
+                        "html": table.html
+                    })
+                
+                return {
+                    "page": page_num,
+                    "result": tables_data,
+                    "method": "img2table"
+                }
+            else:
+                 logger.info(f"Page {page_num}: img2table found no tables.")
+        except Exception as e:
+            logger.error(f"Page {page_num}: img2table extraction failed: {e}")
+
     # Try OpenCV Table Detection first (Grid-based)
     try:
         cells = detect_table_structure_cv2(temp_img_path)

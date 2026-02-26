@@ -7,6 +7,8 @@ from paddleocr import PaddleOCR
 import tempfile
 import logging
 import numpy as np
+import concurrent.futures
+import time
 
 # Initialize FastAPI app
 app = FastAPI(title="PaddleOCR API", description="API to extract text from PDF URLs using PaddleOCR")
@@ -47,11 +49,24 @@ def convert_numpy_types(obj):
     elif isinstance(obj, np.floating):
         return float(obj)
     elif isinstance(obj, np.ndarray):
+        # Truncate large arrays (likely images) to avoid JSON bloat
+        if obj.size > 100:
+             return f"<large_array_shape_{obj.shape}>"
         return obj.tolist()
     elif isinstance(obj, list):
+        # Recursively check list items, truncate large lists
+        if len(obj) > 100 and isinstance(obj[0], (int, float, np.integer, np.floating)):
+             return f"<large_list_len_{len(obj)}>"
         return [convert_numpy_types(i) for i in obj]
     elif isinstance(obj, dict):
-        return {k: convert_numpy_types(v) for k, v in obj.items()}
+        # Filter out keys that might contain large data (e.g. 'img', 'pixels')
+        clean_dict = {}
+        for k, v in obj.items():
+            if k in ['img', 'image', 'pixels', 'data']: # Common large keys
+                clean_dict[k] = "<truncated_image_data>"
+            else:
+                clean_dict[k] = convert_numpy_types(v)
+        return clean_dict
     else:
         return obj
 
@@ -177,6 +192,33 @@ async def extract_text(request: PDFRequest, background_tasks: BackgroundTasks):
         if temp_pdf_path:
             background_tasks.add_task(cleanup_temp_file, temp_pdf_path)
 
+def process_page_ocr(page_num, temp_img_path):
+    try:
+        start_time = time.time()
+        # Run OCR on the image
+        result = ocr.ocr(temp_img_path)
+        logger.info(f"Page {page_num} OCR processed in {time.time() - start_time:.2f}s")
+        
+        # Log the raw result structure for debugging (only if small or just type)
+        if result:
+             logger.debug(f"Page {page_num} raw result type: {type(result)}")
+
+        page_data = process_ocr_result(result)
+
+        return {
+            "page": page_num,
+            "result": page_data
+        }
+    except Exception as e:
+        logger.error(f"Error processing page {page_num}: {e}")
+        return {
+            "page": page_num,
+            "error": str(e)
+        }
+    finally:
+        # Clean up image file immediately after OCR is done
+        cleanup_temp_file(temp_img_path)
+
 @app.post("/extract-table-text")
 async def extract_table_text(request: PDFRequest, background_tasks: BackgroundTasks):
     url = request.url.strip()
@@ -200,8 +242,9 @@ async def extract_table_text(request: PDFRequest, background_tasks: BackgroundTa
 
         # Open PDF with PyMuPDF
         doc = fitz.open(temp_pdf_path)
-        extracted_data = []
-
+        
+        # Extract all images first sequentially (fast)
+        page_tasks = []
         for page_num in range(len(doc)):
             page = doc.load_page(page_num)
             pix = page.get_pixmap()
@@ -210,23 +253,27 @@ async def extract_table_text(request: PDFRequest, background_tasks: BackgroundTa
             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_img:
                 pix.save(temp_img.name)
                 temp_img_path = temp_img.name
+                page_tasks.append((page_num + 1, temp_img_path))
+        
+        logger.info(f"Extracted {len(page_tasks)} pages as images. Starting parallel OCR.")
+        
+        extracted_data = []
+        
+        # Use ThreadPoolExecutor for parallel OCR
+        # Adjust max_workers based on CPU cores, but since OCR is CPU bound and releases GIL (hopefully),
+        # too many threads might cause contention. 4-8 is usually good.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_page = {executor.submit(process_page_ocr, p_num, p_path): p_num for p_num, p_path in page_tasks}
             
-            try:
-                # Run OCR on the image
-                result = ocr.ocr(temp_img_path)
-                
-                # Log the raw result structure for debugging
-                logger.info(f"Page {page_num + 1} raw result: {result}")
-
-                page_data = process_ocr_result(result)
-
-                extracted_data.append({
-                    "page": page_num + 1,
-                    "result": page_data
-                })
-            finally:
-                # Clean up image file immediately
-                cleanup_temp_file(temp_img_path)
+            for future in concurrent.futures.as_completed(future_to_page):
+                try:
+                    data = future.result()
+                    extracted_data.append(data)
+                except Exception as exc:
+                    logger.error(f"Page processing generated an exception: {exc}")
+        
+        # Sort results by page number
+        extracted_data.sort(key=lambda x: x['page'])
 
         return {"status": "success", "data": extracted_data}
 

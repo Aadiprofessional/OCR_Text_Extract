@@ -3,9 +3,10 @@ import requests
 import fitz  # PyMuPDF
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
-from paddleocr import PaddleOCR
+from paddleocr import PaddleOCR, PPStructure
 import tempfile
 import logging
+import numpy as np
 
 # Initialize FastAPI app
 app = FastAPI(title="PaddleOCR API", description="API to extract text from PDF URLs using PaddleOCR")
@@ -21,16 +22,44 @@ logger = logging.getLogger(__name__)
 # Note: newer versions of paddleocr might have changed argument names. 
 # 'use_gpu' is not a valid argument for the new Pipeline-based API in some versions.
 # We will try to set it via environment variable if needed, or rely on defaults.
+ocr = None
+pp_structure = None
+
 try:
     # Removed use_gpu=False as it caused ValueError: Unknown argument: use_gpu
     ocr = PaddleOCR(use_angle_cls=True, lang='en', enable_mkldnn=False)
     logger.info("PaddleOCR initialized successfully.")
 except Exception as e:
     logger.error(f"Failed to initialize PaddleOCR: {e}")
-    raise e
+    # Don't raise here to allow partial initialization if possible, or raise later if critical
+
+try:
+    # Initialize PPStructure for layout analysis and table extraction
+    # show_log=False reduces console spam
+    pp_structure = PPStructure(show_log=False, image_orientation=True)
+    logger.info("PPStructure initialized successfully.")
+except Exception as e:
+    logger.error(f"Failed to initialize PPStructure: {e}")
+    # We will check availability in the endpoint
+
+if not ocr and not pp_structure:
+    raise RuntimeError("Failed to initialize any OCR engine")
 
 class PDFRequest(BaseModel):
     url: str
+
+def convert_to_serializable(obj):
+    if isinstance(obj, (np.integer, int)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, float)):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, list):
+        return [convert_to_serializable(item) for item in obj]
+    elif isinstance(obj, dict):
+        return {k: convert_to_serializable(v) for k, v in obj.items()}
+    return obj
 
 def cleanup_temp_file(path: str):
     try:
@@ -126,6 +155,84 @@ async def extract_text(request: PDFRequest, background_tasks: BackgroundTasks):
 
     except Exception as e:
         logger.error(f"Error processing request: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    finally:
+        # Schedule PDF file cleanup
+        if temp_pdf_path:
+            background_tasks.add_task(cleanup_temp_file, temp_pdf_path)
+
+@app.post("/extract-table-text")
+async def extract_table_text(request: PDFRequest, background_tasks: BackgroundTasks):
+    if not pp_structure:
+        raise HTTPException(status_code=503, detail="PPStructure is not initialized")
+
+    url = request.url
+    logger.info(f"Received table/text extraction request for URL: {url}")
+
+    temp_pdf_path = None
+    
+    try:
+        # Download PDF
+        response = requests.get(url, stream=True)
+        if response.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to download PDF from URL")
+        
+        # Create a temp file for the PDF
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
+            for chunk in response.iter_content(chunk_size=8192):
+                temp_pdf.write(chunk)
+            temp_pdf_path = temp_pdf.name
+        
+        logger.info(f"PDF downloaded to {temp_pdf_path}")
+
+        # Open PDF with PyMuPDF
+        doc = fitz.open(temp_pdf_path)
+        extracted_data = []
+
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            pix = page.get_pixmap()
+            
+            # Create a temp image file for the page
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_img:
+                pix.save(temp_img.name)
+                temp_img_path = temp_img.name
+            
+            try:
+                # Run PPStructure on the image
+                # Returns a list of dicts: [{'type': 'text', 'bbox': [x1, y1, x2, y2], 'res': ...}, ...]
+                result = pp_structure(temp_img_path)
+                
+                # Process result to be JSON serializable
+                # PPStructure result contains numpy arrays and floats
+                serializable_result = []
+                if result:
+                    for region in result:
+                        # region is a dict
+                        # type: str
+                        # bbox: list or np.array
+                        # res: list (for text) or dict (for table)
+                        
+                        region_data = convert_to_serializable(region)
+                        serializable_result.append(region_data)
+
+                extracted_data.append({
+                    "page": page_num + 1,
+                    "regions": serializable_result
+                })
+                
+            finally:
+                # Clean up image file immediately
+                cleanup_temp_file(temp_img_path)
+
+        return {"status": "success", "data": extracted_data}
+
+    except Exception as e:
+        logger.error(f"Error processing table/text extraction request: {str(e)}")
+        # Log full traceback for debugging
+        import traceback
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
     
     finally:

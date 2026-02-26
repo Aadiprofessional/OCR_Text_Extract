@@ -203,13 +203,33 @@ def extract_text_from_cells(image_path, cells):
             # OCR on cell
             # Using basic OCR here since we cropped to cell
             try:
+                # Add padding to ROI to improve OCR accuracy
+                # PaddleOCR sometimes fails on tight crops
+                h_img, w_img, _ = img.shape
+                pad = 5
+                y1 = max(0, y - pad)
+                y2 = min(h_img, y + h + pad)
+                x1 = max(0, x - pad)
+                x2 = min(w_img, x + w + pad)
+                roi = img[y1:y2, x1:x2]
+
                 # The 'cls' argument was causing errors on some PaddleOCR versions
                 # when called on a cropped image (numpy array).
                 # We can try calling it without cls=False first.
                 result = ocr.ocr(roi)
                 cell_text = ""
                 if result and result[0]:
-                    texts = [line[1][0] for line in result[0] if line]
+                    # Filter out low confidence and very small text
+                    # Join valid text parts
+                    texts = []
+                    for line in result[0]:
+                         if line:
+                             text_content = line[1][0]
+                             # Fix common OCR issue where it returns single chars separated by spaces
+                             # e.g. "n a o t o" -> "naoto" if it looks like garbage
+                             if len(text_content) > 3 and text_content.count(' ') > len(text_content) / 2:
+                                 text_content = text_content.replace(' ', '')
+                             texts.append(text_content)
                     cell_text = " ".join(texts)
                 
                 row_data.append({
@@ -450,10 +470,9 @@ def process_page_structure(page_num, temp_img_path):
             logger.info(f"Page {page_num}: Attempting img2table extraction...")
             # Initialize img2table's PaddleOCR wrapper
             # We use 'en' language by default
-            # Explicitly set use_angle_cls=True to match our main OCR config
-            # And disable mkldnn if possible via kwarg if supported, or rely on env
-            # img2table passes kwargs to PaddleOCR constructor
-            ocr_img2table = Img2TablePaddleOCR(lang='en', use_angle_cls=True, enable_mkldnn=False)
+            # Explicitly set enable_mkldnn=False to avoid crash
+            # Removed use_angle_cls=True as it caused TypeError in img2table
+            ocr_img2table = Img2TablePaddleOCR(lang='en', enable_mkldnn=False)
             
             # Create Image object
             doc = Img2TableImage(src=temp_img_path)

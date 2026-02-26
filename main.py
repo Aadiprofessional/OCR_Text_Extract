@@ -1,29 +1,36 @@
 import os
 import tempfile
 import requests
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from paddleocr import PPStructureV3
 from pdf2image import convert_from_path
 from html.parser import HTMLParser
 
-app = FastAPI(title="PP-StructureV3 OCR API")
-
-# Initialize once at startup
 pipeline = None
 
-@app.on_event("startup")
-def load_model():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global pipeline
-    pipeline = PPStructureV3()
+    print("Loading PPStructureV3 model...")
+    pipeline = PPStructureV3(
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=False
+    )
+    print("Model loaded successfully!")
+    yield
+
+app = FastAPI(title="PP-StructureV3 OCR API", lifespan=lifespan)
 
 class ExtractRequest(BaseModel):
     url: str
-    pages: list[int] | None = None  # e.g. [0, 1] — None = all pages
+    pages: list[int] | None = None  # e.g. [0, 1] — None means all pages
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": "PPStructureV3"}
+    return {"status": "ok", "model": "PPStructureV3", "loaded": pipeline is not None}
 
 @app.post("/extract")
 def extract(req: ExtractRequest):
@@ -55,7 +62,6 @@ def extract(req: ExtractRequest):
         results = []
 
         for page_index, image in selected:
-            # Save image to temp PNG
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as img_tmp:
                 image.save(img_tmp.name)
                 img_path = img_tmp.name

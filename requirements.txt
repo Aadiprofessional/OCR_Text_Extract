@@ -1,7 +1,7 @@
 fastapi
 uvicorn
 paddlepaddle
-paddleocr>=2.6.0.3
+paddleocr[doc-parser]>=2.6.0.3
 requests
 opencv-python-headless
 PyMuPDF

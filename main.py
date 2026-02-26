@@ -34,12 +34,15 @@ pp_structure = None
 try:
     # Removed use_gpu=False as it caused ValueError: Unknown argument: use_gpu
     if PaddleOCR:
+        # initialize with use_angle_cls=True, lang='en', enable_mkldnn=False
         ocr = PaddleOCR(use_angle_cls=True, lang='en', enable_mkldnn=False)
         logger.info("PaddleOCR initialized successfully.")
     else:
         logger.error("PaddleOCR module not found.")
 except Exception as e:
     logger.error(f"Failed to initialize PaddleOCR: {e}")
+    import traceback
+    traceback.print_exc()
     # Don't raise here to allow partial initialization if possible, or raise later if critical
 
 try:

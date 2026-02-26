@@ -223,7 +223,16 @@ def process_page_ocr(page_num, temp_img_path):
         if result:
              logger.debug(f"Page {page_num} raw result type: {type(result)}")
 
+        # Process OCR result
         page_data = process_ocr_result(result)
+        
+        # Sort by Y coordinate first (top to bottom), then X (left to right)
+        # Bbox is [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+        # We sort by y1 of the first point
+        try:
+            page_data.sort(key=lambda x: (x['box'][0][1], x['box'][0][0]))
+        except Exception:
+            pass # Keep original order if sorting fails
 
         return {
             "page": page_num,
@@ -240,8 +249,10 @@ def process_page_ocr(page_num, temp_img_path):
         cleanup_temp_file(temp_img_path)
 
 def process_page_structure(page_num, temp_img_path):
+    # Fallback to standard OCR if PPStructure is not available
     if not table_engine:
-         return {"page": page_num, "error": "PPStructure not initialized"}
+        logger.warning(f"PPStructure not initialized, falling back to standard OCR for page {page_num}")
+        return process_page_ocr(page_num, temp_img_path)
 
     try:
         start_time = time.time()

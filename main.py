@@ -300,6 +300,20 @@ def normalize_image_for_ocr(image, max_side: int = 2500):
     new_height = max(1, int(height * scale))
     return cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
 
+def prepare_image_png_for_ocr(source_path: str, max_side: int = 2500):
+    image = decode_image_file(source_path)
+    if image is None:
+        raise HTTPException(status_code=400, detail="Unsupported image format")
+    normalized = normalize_image_for_ocr(image, max_side=max_side)
+    if normalized is None:
+        raise HTTPException(status_code=400, detail="Failed to prepare image for OCR")
+    height, width = normalized.shape[:2]
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as normalized_img:
+        ok = cv2.imwrite(normalized_img.name, normalized)
+        if not ok:
+            raise HTTPException(status_code=500, detail="Failed to convert image to PNG for OCR")
+        return normalized_img.name, width, height
+
 def scale_polygon(polygon, scale_x: float, scale_y: float):
     if not isinstance(polygon, list):
         return polygon
@@ -970,18 +984,12 @@ async def extract_text_positions(request: PDFRequest, background_tasks: Backgrou
         if is_pdf_file(temp_file_path):
             pages = extract_positions_from_pdf(temp_file_path, primary_engine, fallback_engine, temp_image_paths)
             return {"status": "success", "file_type": "pdf", "data": pages}
-        image = decode_image_file(temp_file_path)
-        if image is None:
-            raise HTTPException(status_code=400, detail="Unsupported file type. Provide a valid PDF, DOC, DOCX, or image URL")
-        image = normalize_image_for_ocr(image)
-        height, width = image.shape[:2]
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as normalized_img:
-            cv2.imwrite(normalized_img.name, image)
-            temp_image_paths.append(normalized_img.name)
-            page_data = process_page_positions_with_engine(1, normalized_img.name, primary_engine, width, height)
+        normalized_png_path, width, height = prepare_image_png_for_ocr(temp_file_path, max_side=2500)
+        temp_image_paths.append(normalized_png_path)
+        page_data = process_page_positions_with_engine(1, normalized_png_path, primary_engine, width, height)
         if lang == "auto" and not page_data["results"]:
             fallback_engine = get_ocr_engine("ch")
-            page_data = process_page_positions_with_engine(1, normalized_img.name, fallback_engine, width, height)
+            page_data = process_page_positions_with_engine(1, normalized_png_path, fallback_engine, width, height)
         return {"status": "success", "file_type": "image", "data": [page_data]}
     except HTTPException:
         raise

@@ -10,6 +10,7 @@ import concurrent.futures
 import time
 import cv2
 from urllib.parse import urlparse
+from typing import Optional
 try:
     from img2table.ocr import PaddleOCR as Img2TablePaddleOCR
     from img2table.document import Image as Img2TableImage
@@ -64,7 +65,7 @@ except Exception as e:
 class PDFRequest(BaseModel):
     url: str
 
-def guess_file_suffix(url: str, content_type: str | None):
+def guess_file_suffix(url: str, content_type: Optional[str]):
     parsed = urlparse(url)
     _, ext = os.path.splitext(parsed.path.lower())
     if ext in [".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"]:
@@ -116,7 +117,7 @@ def polygon_to_bbox(polygon):
         "height": y_max - y_min
     }
 
-def process_page_positions(page_num: int, image_path: str, image_width: int | None = None, image_height: int | None = None):
+def process_page_positions(page_num: int, image_path: str, image_width: Optional[int] = None, image_height: Optional[int] = None):
     result = ocr.ocr(image_path)
     page_data = process_ocr_result(result)
     try:

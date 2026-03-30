@@ -244,6 +244,25 @@ def process_page_positions_with_engine(
         "results": positions
     }
 
+def decode_image_file(image_path: str):
+    with open(image_path, "rb") as f:
+        raw = f.read()
+    np_data = np.frombuffer(raw, dtype=np.uint8)
+    image = cv2.imdecode(np_data, cv2.IMREAD_COLOR)
+    return image
+
+def normalize_image_for_ocr(image, max_side: int = 2500):
+    if image is None:
+        return None
+    height, width = image.shape[:2]
+    largest = max(height, width)
+    if largest <= max_side:
+        return image
+    scale = max_side / float(largest)
+    new_width = max(1, int(width * scale))
+    new_height = max(1, int(height * scale))
+    return cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
 def extract_positions_from_pdf(pdf_path: str, primary_engine, fallback_engine, temp_image_paths):
     doc = fitz.open(pdf_path)
     pages = []
@@ -899,14 +918,18 @@ async def extract_text_positions(request: PDFRequest, background_tasks: Backgrou
         if is_pdf_file(temp_file_path):
             pages = extract_positions_from_pdf(temp_file_path, primary_engine, fallback_engine, temp_image_paths)
             return {"status": "success", "file_type": "pdf", "data": pages}
-        image = cv2.imread(temp_file_path)
+        image = decode_image_file(temp_file_path)
         if image is None:
             raise HTTPException(status_code=400, detail="Unsupported file type. Provide a valid PDF, DOC, DOCX, or image URL")
+        image = normalize_image_for_ocr(image)
         height, width = image.shape[:2]
-        page_data = process_page_positions_with_engine(1, temp_file_path, primary_engine, width, height)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as normalized_img:
+            cv2.imwrite(normalized_img.name, image)
+            temp_image_paths.append(normalized_img.name)
+            page_data = process_page_positions_with_engine(1, normalized_img.name, primary_engine, width, height)
         if lang == "auto" and not page_data["results"]:
             fallback_engine = get_ocr_engine("ch")
-            page_data = process_page_positions_with_engine(1, temp_file_path, fallback_engine, width, height)
+            page_data = process_page_positions_with_engine(1, normalized_img.name, fallback_engine, width, height)
         return {"status": "success", "file_type": "image", "data": [page_data]}
     except HTTPException:
         raise

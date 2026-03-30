@@ -13,6 +13,9 @@ from urllib.parse import urlparse
 from typing import Optional
 import subprocess
 import shutil
+import re
+
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 try:
     from img2table.ocr import PaddleOCR as Img2TablePaddleOCR
     from img2table.document import Image as Img2TableImage
@@ -71,12 +74,16 @@ class PDFRequest(BaseModel):
 def sanitize_input_url(raw_url: str):
     if not raw_url:
         raise HTTPException(status_code=400, detail="URL is required")
-    clean_url = raw_url.strip()
-    while len(clean_url) >= 2 and clean_url[0] in ["`", "\"", "'"] and clean_url[-1] in ["`", "\"", "'"]:
-        clean_url = clean_url[1:-1].strip()
-    clean_url = clean_url.replace("\n", "").replace("\r", "").strip()
+    clean_url = str(raw_url).replace("\n", " ").replace("\r", " ").strip()
+    match = re.search(r"https?://[^\s'\"`]+", clean_url)
+    if match:
+        clean_url = match.group(0).strip()
+    clean_url = clean_url.strip("`'\"")
     if not clean_url.startswith("http://") and not clean_url.startswith("https://"):
         raise HTTPException(status_code=400, detail="Invalid URL. Use a valid http/https URL")
+    parsed = urlparse(clean_url)
+    if not parsed.netloc:
+        raise HTTPException(status_code=400, detail="Invalid URL. Missing host")
     return clean_url
 
 def guess_file_suffix(url: str, content_type: Optional[str]):

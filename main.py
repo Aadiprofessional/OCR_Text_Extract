@@ -9,6 +9,7 @@ import numpy as np
 import concurrent.futures
 import time
 import cv2
+from urllib.parse import urlparse
 try:
     from img2table.ocr import PaddleOCR as Img2TablePaddleOCR
     from img2table.document import Image as Img2TableImage
@@ -62,6 +63,82 @@ except Exception as e:
 
 class PDFRequest(BaseModel):
     url: str
+
+def guess_file_suffix(url: str, content_type: str | None):
+    parsed = urlparse(url)
+    _, ext = os.path.splitext(parsed.path.lower())
+    if ext in [".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"]:
+        return ext
+    if content_type:
+        ct = content_type.lower()
+        if "pdf" in ct:
+            return ".pdf"
+        if "png" in ct:
+            return ".png"
+        if "jpeg" in ct or "jpg" in ct:
+            return ".jpg"
+        if "bmp" in ct:
+            return ".bmp"
+        if "tiff" in ct:
+            return ".tiff"
+        if "webp" in ct:
+            return ".webp"
+    return ".bin"
+
+def is_pdf_file(file_path: str):
+    try:
+        with open(file_path, "rb") as f:
+            return f.read(4) == b"%PDF"
+    except Exception:
+        return False
+
+def polygon_to_bbox(polygon):
+    if not isinstance(polygon, list) or len(polygon) == 0:
+        return None
+    xs = []
+    ys = []
+    for point in polygon:
+        if isinstance(point, (list, tuple)) and len(point) >= 2:
+            xs.append(float(point[0]))
+            ys.append(float(point[1]))
+    if not xs or not ys:
+        return None
+    x_min = min(xs)
+    x_max = max(xs)
+    y_min = min(ys)
+    y_max = max(ys)
+    return {
+        "x_min": x_min,
+        "y_min": y_min,
+        "x_max": x_max,
+        "y_max": y_max,
+        "width": x_max - x_min,
+        "height": y_max - y_min
+    }
+
+def process_page_positions(page_num: int, image_path: str, image_width: int | None = None, image_height: int | None = None):
+    result = ocr.ocr(image_path)
+    page_data = process_ocr_result(result)
+    try:
+        page_data.sort(key=lambda x: (x["box"][0][1], x["box"][0][0]))
+    except Exception:
+        pass
+    positions = []
+    for item in page_data:
+        polygon = item.get("box", [])
+        bbox = polygon_to_bbox(polygon)
+        positions.append({
+            "text": item.get("text", ""),
+            "score": item.get("score", 0.0),
+            "polygon": polygon,
+            "bbox": bbox
+        })
+    return {
+        "page": page_num,
+        "width": image_width,
+        "height": image_height,
+        "results": positions
+    }
 
 def cleanup_temp_file(path: str):
     try:
@@ -651,6 +728,50 @@ async def extract_table_text(request: PDFRequest, background_tasks: BackgroundTa
         # Schedule PDF file cleanup
         if temp_pdf_path:
             background_tasks.add_task(cleanup_temp_file, temp_pdf_path)
+
+@app.post("/extract-text-positions")
+async def extract_text_positions(request: PDFRequest, background_tasks: BackgroundTasks):
+    url = request.url.strip()
+    logger.info(f"Received request for URL: {url} (extract-text-positions)")
+    temp_file_path = None
+    temp_image_paths = []
+    try:
+        response = requests.get(url, stream=True)
+        if response.status_code != 200:
+            raise HTTPException(status_code=400, detail="Failed to download file from URL")
+        suffix = guess_file_suffix(url, response.headers.get("content-type"))
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            for chunk in response.iter_content(chunk_size=8192):
+                temp_file.write(chunk)
+            temp_file_path = temp_file.name
+        if is_pdf_file(temp_file_path):
+            doc = fitz.open(temp_file_path)
+            pages = []
+            for page_idx in range(len(doc)):
+                page = doc.load_page(page_idx)
+                pix = page.get_pixmap()
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_img:
+                    pix.save(temp_img.name)
+                    temp_image_paths.append(temp_img.name)
+                    page_data = process_page_positions(page_idx + 1, temp_img.name, pix.width, pix.height)
+                    pages.append(page_data)
+            return {"status": "success", "file_type": "pdf", "data": pages}
+        image = cv2.imread(temp_file_path)
+        if image is None:
+            raise HTTPException(status_code=400, detail="Unsupported file type. Provide a valid PDF or image URL")
+        height, width = image.shape[:2]
+        page_data = process_page_positions(1, temp_file_path, width, height)
+        return {"status": "success", "file_type": "image", "data": [page_data]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing request in extract-text-positions: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if temp_file_path:
+            background_tasks.add_task(cleanup_temp_file, temp_file_path)
+        for temp_img_path in temp_image_paths:
+            background_tasks.add_task(cleanup_temp_file, temp_img_path)
 
 @app.get("/health")
 def health_check():

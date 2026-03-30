@@ -68,6 +68,17 @@ class PDFRequest(BaseModel):
     url: str
     lang: Optional[str] = "auto"
 
+def sanitize_input_url(raw_url: str):
+    if not raw_url:
+        raise HTTPException(status_code=400, detail="URL is required")
+    clean_url = raw_url.strip()
+    while len(clean_url) >= 2 and clean_url[0] in ["`", "\"", "'"] and clean_url[-1] in ["`", "\"", "'"]:
+        clean_url = clean_url[1:-1].strip()
+    clean_url = clean_url.replace("\n", "").replace("\r", "").strip()
+    if not clean_url.startswith("http://") and not clean_url.startswith("https://"):
+        raise HTTPException(status_code=400, detail="Invalid URL. Use a valid http/https URL")
+    return clean_url
+
 def guess_file_suffix(url: str, content_type: Optional[str]):
     parsed = urlparse(url)
     _, ext = os.path.splitext(parsed.path.lower())
@@ -518,14 +529,18 @@ def process_ocr_result(result):
 
 @app.post("/extract-text")
 async def extract_text(request: PDFRequest, background_tasks: BackgroundTasks):
-    url = request.url
+    url = sanitize_input_url(request.url)
     logger.info(f"Received request for URL: {url}")
 
     temp_pdf_path = None
     
     try:
         # Download PDF
-        response = requests.get(url, stream=True)
+        response = requests.get(
+            url,
+            stream=True,
+            headers={"User-Agent": "Mozilla/5.0 OCR-Service/1.0", "Accept": "*/*"}
+        )
         if response.status_code != 200:
             raise HTTPException(status_code=400, detail="Failed to download PDF from URL")
         
@@ -777,14 +792,18 @@ def process_page_structure(page_num, temp_img_path):
 
 @app.post("/extract-table-text")
 async def extract_table_text(request: PDFRequest, background_tasks: BackgroundTasks):
-    url = request.url.strip()
+    url = sanitize_input_url(request.url)
     logger.info(f"Received request for URL: {url} (extract-table-text)")
 
     temp_pdf_path = None
     
     try:
         # Download PDF
-        response = requests.get(url, stream=True)
+        response = requests.get(
+            url,
+            stream=True,
+            headers={"User-Agent": "Mozilla/5.0 OCR-Service/1.0", "Accept": "*/*"}
+        )
         if response.status_code != 200:
             raise HTTPException(status_code=400, detail="Failed to download PDF from URL")
         
@@ -844,7 +863,7 @@ async def extract_table_text(request: PDFRequest, background_tasks: BackgroundTa
 
 @app.post("/extract-text-positions")
 async def extract_text_positions(request: PDFRequest, background_tasks: BackgroundTasks):
-    url = request.url.strip()
+    url = sanitize_input_url(request.url)
     lang = normalize_lang(request.lang)
     logger.info(f"Received request for URL: {url} (extract-text-positions, lang={lang})")
     temp_file_path = None
@@ -852,7 +871,11 @@ async def extract_text_positions(request: PDFRequest, background_tasks: Backgrou
     temp_conversion_dir = None
     temp_image_paths = []
     try:
-        response = requests.get(url, stream=True)
+        response = requests.get(
+            url,
+            stream=True,
+            headers={"User-Agent": "Mozilla/5.0 OCR-Service/1.0", "Accept": "*/*"}
+        )
         if response.status_code != 200:
             raise HTTPException(status_code=400, detail="Failed to download file from URL")
         suffix = guess_file_suffix(url, response.headers.get("content-type"))

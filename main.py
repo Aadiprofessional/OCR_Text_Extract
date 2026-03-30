@@ -64,6 +64,7 @@ except Exception as e:
 
 class PDFRequest(BaseModel):
     url: str
+    lang: Optional[str] = "auto"
 
 def guess_file_suffix(url: str, content_type: Optional[str]):
     parsed = urlparse(url)
@@ -117,8 +118,37 @@ def polygon_to_bbox(polygon):
         "height": y_max - y_min
     }
 
-def process_page_positions(page_num: int, image_path: str, image_width: Optional[int] = None, image_height: Optional[int] = None):
-    result = ocr.ocr(image_path)
+ocr_engines = {"en": ocr}
+
+def normalize_lang(lang: Optional[str]):
+    if not lang:
+        return "auto"
+    value = lang.strip().lower()
+    if value in ["zh", "cn", "chinese", "ch", "zh-cn", "zh_cn", "zh-hans"]:
+        return "ch"
+    if value in ["en", "english"]:
+        return "en"
+    if value in ["auto", "detect"]:
+        return "auto"
+    return "en"
+
+def get_ocr_engine(lang: str):
+    if lang in ocr_engines:
+        return ocr_engines[lang]
+    if lang == "ch":
+        ocr_engines["ch"] = PaddleOCR(use_angle_cls=True, lang="ch", enable_mkldnn=False)
+        logger.info("Chinese PaddleOCR initialized successfully.")
+        return ocr_engines["ch"]
+    return ocr
+
+def process_page_positions_with_engine(
+    page_num: int,
+    image_path: str,
+    ocr_engine,
+    image_width: Optional[int] = None,
+    image_height: Optional[int] = None
+):
+    result = ocr_engine.ocr(image_path)
     page_data = process_ocr_result(result)
     try:
         page_data.sort(key=lambda x: (x["box"][0][1], x["box"][0][0]))
@@ -733,7 +763,8 @@ async def extract_table_text(request: PDFRequest, background_tasks: BackgroundTa
 @app.post("/extract-text-positions")
 async def extract_text_positions(request: PDFRequest, background_tasks: BackgroundTasks):
     url = request.url.strip()
-    logger.info(f"Received request for URL: {url} (extract-text-positions)")
+    lang = normalize_lang(request.lang)
+    logger.info(f"Received request for URL: {url} (extract-text-positions, lang={lang})")
     temp_file_path = None
     temp_image_paths = []
     try:
@@ -748,20 +779,40 @@ async def extract_text_positions(request: PDFRequest, background_tasks: Backgrou
         if is_pdf_file(temp_file_path):
             doc = fitz.open(temp_file_path)
             pages = []
+            primary_engine = get_ocr_engine("en" if lang == "auto" else lang)
+            fallback_engine = get_ocr_engine("ch") if lang == "auto" else None
             for page_idx in range(len(doc)):
                 page = doc.load_page(page_idx)
                 pix = page.get_pixmap()
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_img:
                     pix.save(temp_img.name)
                     temp_image_paths.append(temp_img.name)
-                    page_data = process_page_positions(page_idx + 1, temp_img.name, pix.width, pix.height)
+                    page_data = process_page_positions_with_engine(
+                        page_idx + 1,
+                        temp_img.name,
+                        primary_engine,
+                        pix.width,
+                        pix.height
+                    )
+                    if fallback_engine and not page_data["results"]:
+                        page_data = process_page_positions_with_engine(
+                            page_idx + 1,
+                            temp_img.name,
+                            fallback_engine,
+                            pix.width,
+                            pix.height
+                        )
                     pages.append(page_data)
             return {"status": "success", "file_type": "pdf", "data": pages}
         image = cv2.imread(temp_file_path)
         if image is None:
             raise HTTPException(status_code=400, detail="Unsupported file type. Provide a valid PDF or image URL")
         height, width = image.shape[:2]
-        page_data = process_page_positions(1, temp_file_path, width, height)
+        primary_engine = get_ocr_engine("en" if lang == "auto" else lang)
+        page_data = process_page_positions_with_engine(1, temp_file_path, primary_engine, width, height)
+        if lang == "auto" and not page_data["results"]:
+            fallback_engine = get_ocr_engine("ch")
+            page_data = process_page_positions_with_engine(1, temp_file_path, fallback_engine, width, height)
         return {"status": "success", "file_type": "image", "data": [page_data]}
     except HTTPException:
         raise

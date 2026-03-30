@@ -11,6 +11,8 @@ import time
 import cv2
 from urllib.parse import urlparse
 from typing import Optional
+import subprocess
+import shutil
 try:
     from img2table.ocr import PaddleOCR as Img2TablePaddleOCR
     from img2table.document import Image as Img2TableImage
@@ -69,12 +71,16 @@ class PDFRequest(BaseModel):
 def guess_file_suffix(url: str, content_type: Optional[str]):
     parsed = urlparse(url)
     _, ext = os.path.splitext(parsed.path.lower())
-    if ext in [".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"]:
+    if ext in [".pdf", ".doc", ".docx", ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"]:
         return ext
     if content_type:
         ct = content_type.lower()
         if "pdf" in ct:
             return ".pdf"
+        if "vnd.openxmlformats-officedocument.wordprocessingml.document" in ct:
+            return ".docx"
+        if "application/msword" in ct:
+            return ".doc"
         if "png" in ct:
             return ".png"
         if "jpeg" in ct or "jpg" in ct:
@@ -93,6 +99,55 @@ def is_pdf_file(file_path: str):
             return f.read(4) == b"%PDF"
     except Exception:
         return False
+
+def is_doc_file(file_path: str):
+    ext = os.path.splitext(file_path.lower())[1]
+    return ext in [".doc", ".docx"]
+
+def cleanup_temp_path(path: str):
+    try:
+        if not os.path.exists(path):
+            return
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
+        logger.info(f"Cleaned up temp path: {path}")
+    except Exception as e:
+        logger.error(f"Error cleaning up path {path}: {e}")
+
+def convert_office_to_pdf(input_path: str):
+    if not shutil.which("soffice"):
+        raise HTTPException(
+            status_code=500,
+            detail="DOC/DOCX conversion is not available because LibreOffice (soffice) is not installed"
+        )
+    output_dir = tempfile.mkdtemp(prefix="office_to_pdf_")
+    try:
+        subprocess.run(
+            [
+                "soffice",
+                "--headless",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                output_dir,
+                input_path
+            ],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip()
+        stdout = (e.stdout or "").strip()
+        message = stderr or stdout or "Unknown LibreOffice conversion error"
+        raise HTTPException(status_code=500, detail=f"DOC/DOCX conversion failed: {message}")
+    base_name = os.path.splitext(os.path.basename(input_path))[0]
+    output_pdf = os.path.join(output_dir, f"{base_name}.pdf")
+    if not os.path.exists(output_pdf):
+        raise HTTPException(status_code=500, detail="DOC/DOCX conversion failed: output PDF not found")
+    return output_pdf, output_dir
 
 def polygon_to_bbox(polygon):
     if not isinstance(polygon, list) or len(polygon) == 0:
@@ -170,6 +225,33 @@ def process_page_positions_with_engine(
         "height": image_height,
         "results": positions
     }
+
+def extract_positions_from_pdf(pdf_path: str, primary_engine, fallback_engine, temp_image_paths):
+    doc = fitz.open(pdf_path)
+    pages = []
+    for page_idx in range(len(doc)):
+        page = doc.load_page(page_idx)
+        pix = page.get_pixmap()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_img:
+            pix.save(temp_img.name)
+            temp_image_paths.append(temp_img.name)
+            page_data = process_page_positions_with_engine(
+                page_idx + 1,
+                temp_img.name,
+                primary_engine,
+                pix.width,
+                pix.height
+            )
+            if fallback_engine and not page_data["results"]:
+                page_data = process_page_positions_with_engine(
+                    page_idx + 1,
+                    temp_img.name,
+                    fallback_engine,
+                    pix.width,
+                    pix.height
+                )
+            pages.append(page_data)
+    return pages
 
 def cleanup_temp_file(path: str):
     try:
@@ -766,6 +848,8 @@ async def extract_text_positions(request: PDFRequest, background_tasks: Backgrou
     lang = normalize_lang(request.lang)
     logger.info(f"Received request for URL: {url} (extract-text-positions, lang={lang})")
     temp_file_path = None
+    temp_converted_pdf_path = None
+    temp_conversion_dir = None
     temp_image_paths = []
     try:
         response = requests.get(url, stream=True)
@@ -776,39 +860,19 @@ async def extract_text_positions(request: PDFRequest, background_tasks: Backgrou
             for chunk in response.iter_content(chunk_size=8192):
                 temp_file.write(chunk)
             temp_file_path = temp_file.name
+        primary_engine = get_ocr_engine("en" if lang == "auto" else lang)
+        fallback_engine = get_ocr_engine("ch") if lang == "auto" else None
+        if is_doc_file(temp_file_path):
+            temp_converted_pdf_path, temp_conversion_dir = convert_office_to_pdf(temp_file_path)
+            pages = extract_positions_from_pdf(temp_converted_pdf_path, primary_engine, fallback_engine, temp_image_paths)
+            return {"status": "success", "file_type": "doc", "data": pages}
         if is_pdf_file(temp_file_path):
-            doc = fitz.open(temp_file_path)
-            pages = []
-            primary_engine = get_ocr_engine("en" if lang == "auto" else lang)
-            fallback_engine = get_ocr_engine("ch") if lang == "auto" else None
-            for page_idx in range(len(doc)):
-                page = doc.load_page(page_idx)
-                pix = page.get_pixmap()
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_img:
-                    pix.save(temp_img.name)
-                    temp_image_paths.append(temp_img.name)
-                    page_data = process_page_positions_with_engine(
-                        page_idx + 1,
-                        temp_img.name,
-                        primary_engine,
-                        pix.width,
-                        pix.height
-                    )
-                    if fallback_engine and not page_data["results"]:
-                        page_data = process_page_positions_with_engine(
-                            page_idx + 1,
-                            temp_img.name,
-                            fallback_engine,
-                            pix.width,
-                            pix.height
-                        )
-                    pages.append(page_data)
+            pages = extract_positions_from_pdf(temp_file_path, primary_engine, fallback_engine, temp_image_paths)
             return {"status": "success", "file_type": "pdf", "data": pages}
         image = cv2.imread(temp_file_path)
         if image is None:
-            raise HTTPException(status_code=400, detail="Unsupported file type. Provide a valid PDF or image URL")
+            raise HTTPException(status_code=400, detail="Unsupported file type. Provide a valid PDF, DOC, DOCX, or image URL")
         height, width = image.shape[:2]
-        primary_engine = get_ocr_engine("en" if lang == "auto" else lang)
         page_data = process_page_positions_with_engine(1, temp_file_path, primary_engine, width, height)
         if lang == "auto" and not page_data["results"]:
             fallback_engine = get_ocr_engine("ch")
@@ -822,6 +886,10 @@ async def extract_text_positions(request: PDFRequest, background_tasks: Backgrou
     finally:
         if temp_file_path:
             background_tasks.add_task(cleanup_temp_file, temp_file_path)
+        if temp_converted_pdf_path:
+            background_tasks.add_task(cleanup_temp_file, temp_converted_pdf_path)
+        if temp_conversion_dir:
+            background_tasks.add_task(cleanup_temp_path, temp_conversion_dir)
         for temp_img_path in temp_image_paths:
             background_tasks.add_task(cleanup_temp_file, temp_img_path)
 

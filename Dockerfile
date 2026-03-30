@@ -9,6 +9,7 @@ RUN set -eux; \
         libgl1-mesa-glx \
         libglib2.0-0 \
         libgomp1 \
+        libreoffice \
         curl; \
     rm -rf /var/lib/apt/lists/*
 

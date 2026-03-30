@@ -221,7 +221,44 @@ def process_page_positions_with_engine(
     image_width: Optional[int] = None,
     image_height: Optional[int] = None
 ):
-    result = ocr_engine.ocr(image_path)
+    result = None
+    scale_x = 1.0
+    scale_y = 1.0
+    try:
+        result = ocr_engine.ocr(image_path)
+    except Exception as first_error:
+        if not is_memory_error(first_error):
+            raise
+        image = decode_image_file(image_path)
+        if image is None:
+            raise
+        original_height, original_width = image.shape[:2]
+        retry_max_sides = [2000, 1600, 1280, 1024, 800, 640]
+        last_error = first_error
+        for max_side in retry_max_sides:
+            resized = normalize_image_for_ocr(image, max_side=max_side)
+            if resized is None:
+                continue
+            resized_height, resized_width = resized.shape[:2]
+            if resized_width >= original_width and resized_height >= original_height:
+                continue
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as resized_img:
+                cv2.imwrite(resized_img.name, resized)
+                resized_path = resized_img.name
+            try:
+                result = ocr_engine.ocr(resized_path)
+                scale_x = float(original_width) / float(resized_width)
+                scale_y = float(original_height) / float(resized_height)
+                break
+            except Exception as retry_error:
+                last_error = retry_error
+                if not is_memory_error(retry_error):
+                    cleanup_temp_file(resized_path)
+                    raise
+            finally:
+                cleanup_temp_file(resized_path)
+        if result is None:
+            raise last_error
     page_data = process_ocr_result(result)
     try:
         page_data.sort(key=lambda x: (x["box"][0][1], x["box"][0][0]))
@@ -229,7 +266,7 @@ def process_page_positions_with_engine(
         pass
     positions = []
     for item in page_data:
-        polygon = item.get("box", [])
+        polygon = scale_polygon(item.get("box", []), scale_x, scale_y)
         bbox = polygon_to_bbox(polygon)
         positions.append({
             "text": item.get("text", ""),
@@ -262,6 +299,21 @@ def normalize_image_for_ocr(image, max_side: int = 2500):
     new_width = max(1, int(width * scale))
     new_height = max(1, int(height * scale))
     return cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+def scale_polygon(polygon, scale_x: float, scale_y: float):
+    if not isinstance(polygon, list):
+        return polygon
+    scaled = []
+    for point in polygon:
+        if isinstance(point, (list, tuple)) and len(point) >= 2:
+            scaled.append([float(point[0]) * scale_x, float(point[1]) * scale_y])
+        else:
+            scaled.append(point)
+    return scaled
+
+def is_memory_error(err: Exception):
+    message = str(err)
+    return "ResourceExhaustedError" in message or "Fail to alloc memory" in message
 
 def extract_positions_from_pdf(pdf_path: str, primary_engine, fallback_engine, temp_image_paths):
     doc = fitz.open(pdf_path)

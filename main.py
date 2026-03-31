@@ -14,6 +14,7 @@ from typing import Optional
 import subprocess
 import shutil
 import re
+import threading
 
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 try:
@@ -192,6 +193,7 @@ def polygon_to_bbox(polygon):
     }
 
 ocr_engines = {"en": ocr}
+ocr_thread_local = threading.local()
 
 def normalize_lang(lang: Optional[str]):
     if not lang:
@@ -213,6 +215,21 @@ def get_ocr_engine(lang: str):
         logger.info("Chinese PaddleOCR initialized successfully.")
         return ocr_engines["ch"]
     return ocr
+
+def get_thread_local_ocr_engine(lang: str):
+    engines = getattr(ocr_thread_local, "engines", None)
+    if engines is None:
+        engines = {}
+        ocr_thread_local.engines = engines
+    if lang in engines:
+        return engines[lang]
+    if lang == "ch":
+        engines["ch"] = PaddleOCR(use_angle_cls=True, lang="ch", enable_mkldnn=False)
+        logger.info("Thread-local Chinese PaddleOCR initialized successfully.")
+        return engines["ch"]
+    engines["en"] = PaddleOCR(use_angle_cls=True, lang="en", enable_mkldnn=False)
+    logger.info("Thread-local English PaddleOCR initialized successfully.")
+    return engines["en"]
 
 def process_page_positions_with_engine(
     page_num: int,
@@ -334,27 +351,38 @@ def process_page_positions_task(
     image_path: str,
     image_width: int,
     image_height: int,
-    primary_engine,
-    fallback_engine
+    primary_lang: str,
+    fallback_lang: Optional[str]
 ):
-    page_data = process_page_positions_with_engine(
-        page_num,
-        image_path,
-        primary_engine,
-        image_width,
-        image_height
-    )
-    if fallback_engine and not page_data["results"]:
+    try:
+        primary_engine = get_thread_local_ocr_engine(primary_lang)
         page_data = process_page_positions_with_engine(
             page_num,
             image_path,
-            fallback_engine,
+            primary_engine,
             image_width,
             image_height
         )
-    return page_data
+        if fallback_lang and not page_data["results"]:
+            fallback_engine = get_thread_local_ocr_engine(fallback_lang)
+            page_data = process_page_positions_with_engine(
+                page_num,
+                image_path,
+                fallback_engine,
+                image_width,
+                image_height
+            )
+        return page_data
+    except Exception as e:
+        logger.error(f"Page {page_num} failed in extract-text-positions: {e}")
+        return {
+            "page": page_num,
+            "width": image_width,
+            "height": image_height,
+            "results": []
+        }
 
-def extract_positions_from_pdf(pdf_path: str, primary_engine, fallback_engine, temp_image_paths):
+def extract_positions_from_pdf(pdf_path: str, primary_lang: str, fallback_lang: Optional[str], temp_image_paths):
     page_tasks = []
     with fitz.open(pdf_path) as doc:
         for page_idx in range(len(doc)):
@@ -380,13 +408,23 @@ def extract_positions_from_pdf(pdf_path: str, primary_engine, fallback_engine, t
                 image_path,
                 image_width,
                 image_height,
-                primary_engine,
-                fallback_engine
-            ): page_num
+                primary_lang,
+                fallback_lang
+            ): (page_num, image_width, image_height)
             for page_num, image_path, image_width, image_height in page_tasks
         }
         for future in concurrent.futures.as_completed(future_to_page):
-            page_data = future.result()
+            page_num, image_width, image_height = future_to_page[future]
+            try:
+                page_data = future.result()
+            except Exception as e:
+                logger.error(f"Page {page_num} future failed in extract-text-positions: {e}")
+                page_data = {
+                    "page": page_num,
+                    "width": image_width,
+                    "height": image_height,
+                    "results": []
+                }
             pages.append(page_data)
     pages.sort(key=lambda item: item["page"])
     return pages
@@ -1010,14 +1048,16 @@ async def extract_text_positions(request: PDFRequest, background_tasks: Backgrou
             for chunk in response.iter_content(chunk_size=8192):
                 temp_file.write(chunk)
             temp_file_path = temp_file.name
-        primary_engine = get_ocr_engine("en" if lang == "auto" else lang)
-        fallback_engine = get_ocr_engine("ch") if lang == "auto" else None
+        primary_lang = "en" if lang == "auto" else lang
+        fallback_lang = "ch" if lang == "auto" else None
+        primary_engine = get_ocr_engine(primary_lang)
+        fallback_engine = get_ocr_engine("ch") if fallback_lang else None
         if is_doc_file(temp_file_path):
             temp_converted_pdf_path, temp_conversion_dir = convert_office_to_pdf(temp_file_path)
-            pages = extract_positions_from_pdf(temp_converted_pdf_path, primary_engine, fallback_engine, temp_image_paths)
+            pages = extract_positions_from_pdf(temp_converted_pdf_path, primary_lang, fallback_lang, temp_image_paths)
             return {"status": "success", "file_type": "doc", "data": pages}
         if is_pdf_file(temp_file_path):
-            pages = extract_positions_from_pdf(temp_file_path, primary_engine, fallback_engine, temp_image_paths)
+            pages = extract_positions_from_pdf(temp_file_path, primary_lang, fallback_lang, temp_image_paths)
             return {"status": "success", "file_type": "pdf", "data": pages}
         normalized_png_path, width, height = prepare_image_png_for_ocr(temp_file_path, max_side=2500)
         temp_image_paths.append(normalized_png_path)

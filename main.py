@@ -329,31 +329,66 @@ def is_memory_error(err: Exception):
     message = str(err)
     return "ResourceExhaustedError" in message or "Fail to alloc memory" in message
 
+def process_page_positions_task(
+    page_num: int,
+    image_path: str,
+    image_width: int,
+    image_height: int,
+    primary_engine,
+    fallback_engine
+):
+    page_data = process_page_positions_with_engine(
+        page_num,
+        image_path,
+        primary_engine,
+        image_width,
+        image_height
+    )
+    if fallback_engine and not page_data["results"]:
+        page_data = process_page_positions_with_engine(
+            page_num,
+            image_path,
+            fallback_engine,
+            image_width,
+            image_height
+        )
+    return page_data
+
 def extract_positions_from_pdf(pdf_path: str, primary_engine, fallback_engine, temp_image_paths):
-    doc = fitz.open(pdf_path)
+    page_tasks = []
+    with fitz.open(pdf_path) as doc:
+        for page_idx in range(len(doc)):
+            page = doc.load_page(page_idx)
+            pix = page.get_pixmap()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_img:
+                pix.save(temp_img.name)
+                temp_image_paths.append(temp_img.name)
+                page_tasks.append((page_idx + 1, temp_img.name, pix.width, pix.height))
+    if not page_tasks:
+        return []
+    max_workers_raw = os.getenv("OCR_POSITIONS_MAX_WORKERS", "").strip()
+    if max_workers_raw.isdigit() and int(max_workers_raw) > 0:
+        max_workers = min(int(max_workers_raw), len(page_tasks))
+    else:
+        max_workers = len(page_tasks)
     pages = []
-    for page_idx in range(len(doc)):
-        page = doc.load_page(page_idx)
-        pix = page.get_pixmap()
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_img:
-            pix.save(temp_img.name)
-            temp_image_paths.append(temp_img.name)
-            page_data = process_page_positions_with_engine(
-                page_idx + 1,
-                temp_img.name,
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_page = {
+            executor.submit(
+                process_page_positions_task,
+                page_num,
+                image_path,
+                image_width,
+                image_height,
                 primary_engine,
-                pix.width,
-                pix.height
-            )
-            if fallback_engine and not page_data["results"]:
-                page_data = process_page_positions_with_engine(
-                    page_idx + 1,
-                    temp_img.name,
-                    fallback_engine,
-                    pix.width,
-                    pix.height
-                )
+                fallback_engine
+            ): page_num
+            for page_num, image_path, image_width, image_height in page_tasks
+        }
+        for future in concurrent.futures.as_completed(future_to_page):
+            page_data = future.result()
             pages.append(page_data)
+    pages.sort(key=lambda item: item["page"])
     return pages
 
 def cleanup_temp_file(path: str):

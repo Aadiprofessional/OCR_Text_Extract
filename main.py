@@ -1,4 +1,5 @@
 import os
+import base64
 import requests
 import fitz  # PyMuPDF
 from fastapi import FastAPI, HTTPException, BackgroundTasks
@@ -1212,6 +1213,129 @@ async def extract_table_text(request: PDFRequest, background_tasks: BackgroundTa
         if temp_pdf_path:
             background_tasks.add_task(cleanup_temp_file, temp_pdf_path)
 
+# ---------------------------------------------------------------------------
+# OCR.space API helpers
+# ---------------------------------------------------------------------------
+OCR_SPACE_API_KEY = os.getenv("OCR_SPACE_API_KEY", "K81736677488957")
+OCR_SPACE_API_URL = "https://api.ocr.space/parse/image"
+
+# Max raw bytes to send to OCR.space before re-compressing (free plan = 1 MB)
+_OCR_SPACE_MAX_BYTES = 900_000
+
+
+def lang_to_ocr_space_params(lang: str) -> dict:
+    """Map normalised lang codes to OCR.space API parameters."""
+    if lang == "ch":
+        return {"language": "chs", "OCREngine": "1"}
+    if lang == "en":
+        return {"language": "eng", "OCREngine": "2"}
+    # auto
+    return {"language": "auto", "OCREngine": "2"}
+
+
+def _ocr_space_post(data: dict) -> list:
+    """POST to OCR.space and return the ParsedResults list."""
+    resp = requests.post(
+        OCR_SPACE_API_URL,
+        headers={"apikey": OCR_SPACE_API_KEY},
+        data=data,
+        timeout=(15, 120),
+    )
+    resp.raise_for_status()
+    body = resp.json()
+    if body.get("IsErroredOnProcessing"):
+        err = body.get("ErrorMessage") or body.get("ParsedResults", [{}])[0].get("ErrorMessage", "unknown")
+        raise RuntimeError(f"OCR.space error: {err}")
+    return body.get("ParsedResults", [])
+
+
+def call_ocr_space_with_url(image_url: str, lang_params: dict) -> list:
+    """Submit a publicly-accessible image URL to OCR.space."""
+    return _ocr_space_post({"url": image_url, "isOverlayRequired": "true", **lang_params})
+
+
+def call_ocr_space_with_file(image_path: str, lang_params: dict) -> list:
+    """Upload a local image to OCR.space as base64, compressing if necessary."""
+    with open(image_path, "rb") as f:
+        raw = f.read()
+
+    ext = os.path.splitext(image_path.lower())[1]
+    mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
+
+    # Compress if over size limit
+    if len(raw) > _OCR_SPACE_MAX_BYTES:
+        img = decode_image_file(image_path)
+        if img is not None:
+            h, w = img.shape[:2]
+            scale = min(1.0, 2000.0 / max(h, w))
+            if scale < 1.0:
+                img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+            quality = 85
+            while quality >= 50:
+                ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+                if ok and len(buf.tobytes()) <= _OCR_SPACE_MAX_BYTES:
+                    raw = buf.tobytes()
+                    mime = "image/jpeg"
+                    break
+                quality -= 10
+
+    b64 = base64.b64encode(raw).decode("utf-8")
+    return _ocr_space_post({"base64Image": f"data:{mime};base64,{b64}", "isOverlayRequired": "true", **lang_params})
+
+
+def ocr_space_to_page_result(parsed_results: list, page_num: int,
+                              width: Optional[int], height: Optional[int]) -> dict:
+    """Convert OCR.space ParsedResults into our standard page-result format."""
+    results = []
+    for parsed in parsed_results:
+        lines = parsed.get("TextOverlay", {}).get("Lines", [])
+        for line in lines:
+            for word in line.get("Words", []):
+                text = word.get("WordText", "").strip()
+                if not text:
+                    continue
+                left = float(word.get("Left", 0))
+                top = float(word.get("Top", 0))
+                w = float(word.get("Width", 0))
+                h = float(word.get("Height", 0))
+                x_min, y_min = left, top
+                x_max, y_max = left + w, top + h
+                results.append({
+                    "text": text,
+                    "score": 1.0,
+                    "polygon": [[x_min, y_min], [x_max, y_min], [x_max, y_max], [x_min, y_max]],
+                    "bbox": {
+                        "x_min": x_min, "y_min": y_min,
+                        "x_max": x_max, "y_max": y_max,
+                        "width": w, "height": h,
+                    },
+                })
+    return {"page": page_num, "width": width, "height": height, "results": results}
+
+
+def extract_positions_from_pdf_via_ocr_space(pdf_path: str, lang_params: dict,
+                                              temp_image_paths: list) -> list:
+    """Convert each PDF page to PNG and submit to OCR.space. Returns list of page results."""
+    page_results = []
+    with fitz.open(pdf_path) as doc:
+        for page_idx in range(len(doc)):
+            page = doc.load_page(page_idx)
+            pix = page.get_pixmap()
+            width, height = pix.width, pix.height
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+                pix.save(tmp.name)
+                img_path = tmp.name
+            temp_image_paths.append(img_path)
+            try:
+                parsed_results = call_ocr_space_with_file(img_path, lang_params)
+                page_data = ocr_space_to_page_result(parsed_results, page_idx + 1, width, height)
+            except Exception as e:
+                logger.error(f"OCR.space failed for PDF page {page_idx + 1}: {e}")
+                page_data = {"page": page_idx + 1, "width": width, "height": height, "results": []}
+            page_results.append(page_data)
+    return page_results
+
+
 @app.post("/extract-text-positions")
 async def extract_text_positions(request: PDFRequest, background_tasks: BackgroundTasks):
     url = sanitize_input_url(request.url)
@@ -1222,7 +1346,7 @@ async def extract_text_positions(request: PDFRequest, background_tasks: Backgrou
     temp_conversion_dir = None
     temp_image_paths = []
     try:
-        # Peek at Content-Type without downloading the full file yet
+        # Peek at Content-Type to guess suffix before downloading
         try:
             head_resp = requests.head(url, timeout=(10, 10),
                                       headers={"User-Agent": "Mozilla/5.0 OCR-Service/1.0"})
@@ -1233,38 +1357,57 @@ async def extract_text_positions(request: PDFRequest, background_tasks: Backgrou
         suffix = guess_file_suffix(url, content_type)
         temp_file_path = download_file_with_retry(url, suffix)
 
-        # Re-check actual file type via magic bytes (handles wrong extensions / iOS uploads)
+        # Re-detect actual format via magic bytes (handles HEIC, wrong extensions, etc.)
         magic_ext = detect_file_type_by_magic(temp_file_path)
         if magic_ext != ".bin":
-            # Rename the temp file so downstream helpers can trust the extension
             new_path = temp_file_path + magic_ext
             os.rename(temp_file_path, new_path)
             temp_file_path = new_path
 
-        primary_lang = "en" if lang == "auto" else lang
-        fallback_lang = "ch" if lang == "auto" else None
-        primary_engine = get_shared_ocr_engine(primary_lang)
+        lang_params = lang_to_ocr_space_params(lang)
 
+        # --- DOC/DOCX: convert to PDF then process page by page ---
         if is_doc_file(temp_file_path):
             temp_converted_pdf_path, temp_conversion_dir = convert_office_to_pdf(temp_file_path)
-            pages = extract_positions_from_pdf(temp_converted_pdf_path, primary_lang, fallback_lang, temp_image_paths)
+            pages = extract_positions_from_pdf_via_ocr_space(
+                temp_converted_pdf_path, lang_params, temp_image_paths
+            )
             return {"status": "success", "file_type": "doc", "data": pages}
+
+        # --- PDF: convert each page to image and call OCR.space ---
         if is_pdf_file(temp_file_path):
-            pages = extract_positions_from_pdf(temp_file_path, primary_lang, fallback_lang, temp_image_paths)
+            pages = extract_positions_from_pdf_via_ocr_space(
+                temp_file_path, lang_params, temp_image_paths
+            )
             return {"status": "success", "file_type": "pdf", "data": pages}
 
-        # Any image format (including HEIC, WebP, GIF, AVIF…) — convert to PNG first
+        # --- Image: try passing the original URL directly (no re-upload needed) ---
+        actual_ext = os.path.splitext(temp_file_path.lower())[1]
+        ocr_space_native = actual_ext in (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff")
+
+        img_cv = decode_image_file(temp_file_path)
+        width = int(img_cv.shape[1]) if img_cv is not None else None
+        height = int(img_cv.shape[0]) if img_cv is not None else None
+
+        if ocr_space_native:
+            try:
+                parsed_results = call_ocr_space_with_url(url, lang_params)
+                page_data = ocr_space_to_page_result(parsed_results, 1, width, height)
+                return {"status": "success", "file_type": "image", "data": [page_data]}
+            except Exception as e:
+                logger.warning(f"OCR.space URL submission failed ({e}), falling back to file upload")
+
+        # Unsupported format or URL call failed — convert to PNG and upload
         normalized_png_path, width, height = prepare_image_png_for_ocr(temp_file_path, max_side=2500)
         temp_image_paths.append(normalized_png_path)
-        page_data = process_page_positions_with_engine(1, normalized_png_path, primary_engine, width, height)
-        if lang == "auto" and not page_data["results"]:
-            fallback_engine = get_shared_ocr_engine("ch")
-            page_data = process_page_positions_with_engine(1, normalized_png_path, fallback_engine, width, height)
+        parsed_results = call_ocr_space_with_file(normalized_png_path, lang_params)
+        page_data = ocr_space_to_page_result(parsed_results, 1, width, height)
         return {"status": "success", "file_type": "image", "data": [page_data]}
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error processing request in extract-text-positions: {str(e)}", exc_info=True)
+        logger.error(f"Error in extract-text-positions: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         if temp_file_path:
@@ -1273,8 +1416,8 @@ async def extract_text_positions(request: PDFRequest, background_tasks: Backgrou
             background_tasks.add_task(cleanup_temp_file, temp_converted_pdf_path)
         if temp_conversion_dir:
             background_tasks.add_task(cleanup_temp_path, temp_conversion_dir)
-        for temp_img_path in temp_image_paths:
-            background_tasks.add_task(cleanup_temp_file, temp_img_path)
+        for p in temp_image_paths:
+            background_tasks.add_task(cleanup_temp_file, p)
 
 @app.get("/health")
 def health_check():

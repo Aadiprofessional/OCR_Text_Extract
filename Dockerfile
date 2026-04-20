@@ -10,7 +10,10 @@ RUN set -eux; \
         libglib2.0-0 \
         libgomp1 \
         libreoffice \
-        curl; \
+        curl \
+        imagemagick \
+        libheif-dev \
+        heif-gdk-pixbuf; \
     rm -rf /var/lib/apt/lists/*
 
 # Set working directory
